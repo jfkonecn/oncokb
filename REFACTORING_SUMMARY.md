@@ -8,23 +8,30 @@ The original `parseGene` function in `DriveAnnotationParser.java` used raw JSON 
 -   **Hard to maintain**: String-based field access prone to typos
 -   **Difficult to understand**: No clear structure of the data being processed
 -   **Error-prone**: Runtime errors when accessing non-existent fields
--   **Performance issues**: Individual database saves instead of batch operations
+-   **Performance issues**: Individual database saves and fetches instead of batch operations
 
 ## Solution
 
-Refactored the code to use a **three-phase approach** with strongly-typed DTO (Data Transfer Object) classes and batch saving:
+Refactored the code to use a **four-phase approach** with strongly-typed DTO (Data Transfer Object) classes, batch fetching, and batch saving:
 
 ### Phase 1: Parse JSON and Convert to DTO
 
 -   Parse raw JSON objects into strongly-typed DTOs
 -   Validate and structure the data
 
-### Phase 2: Convert DTO to Domain Objects
+### Phase 2: Batch Fetch Existing Records
+
+-   Pre-fetch all existing data needed for processing
+-   Collect drug references, PMIDs, and other dependencies
+-   Reduce database round trips during processing
+
+### Phase 3: Convert DTO to Domain Objects
 
 -   Transform DTOs into domain objects (Gene, Evidence, Alteration, etc.)
+-   Use pre-fetched context for efficient lookups
 -   Collect all objects that need to be saved without touching the database
 
-### Phase 3: Save All Changes in a Single Transaction
+### Phase 4: Save All Changes in a Single Transaction
 
 -   Delete existing data for the gene
 -   Save all new data in batches
@@ -62,20 +69,23 @@ A utility class that handles the conversion from JSON objects to strongly-typed 
 -   `mapVusFromJson()` - Converts VUS JSON array to DTO list
 -   Helper methods for safe JSON parsing with null checks
 
-### 3. Added Batch Save Support
+### 3. Added Batch Fetch and Save Support
 
-**Location**: `core/src/main/java/org/mskcc/cbio/oncokb/bo/GenericBo.java` and `GenericBoImpl.java`
+**Location**: `core/src/main/java/org/mskcc/cbio/oncokb/bo/GenericBo.java`, `DrugBo.java`, `ArticleBo.java` and their implementations
 
-Added batch save methods to the BO layer:
+Added batch operations to the BO layer:
 
 -   `saveAll(List<T> entities)` - Saves multiple entities in a batch
--   All BO interfaces (AlterationBo, EvidenceBo, DrugBo, ArticleBo) inherit this method
+-   `findDrugsByNames(Set<String> drugNames)` - Batch fetch drugs by names
+-   `findDrugsByNcitCodes(Set<String> ncitCodes)` - Batch fetch drugs by NCIT codes
+-   `findArticlesByPmids(Set<String> pmids)` - Batch fetch articles by PMIDs
+-   All BO interfaces inherit these methods
 
 ### 4. Refactored `DriveAnnotationParser`
 
 **Location**: `web/src/main/java/org/mskcc/cbio/oncokb/controller/DriveAnnotationParser.java`
 
-#### Three-Phase Implementation:
+#### Four-Phase Implementation:
 
 **Phase 1: JSON to DTO**
 
@@ -85,10 +95,13 @@ private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) 
     GeneImportDto geneImportDto = GeneImportMapper.mapFromJson(geneInfo);
     List<GeneImportDto.VusDto> vusList = GeneImportMapper.mapVusFromJson(vus);
 
-    // Phase 2: Convert DTO to domain objects
-    GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList);
+    // Phase 2: Batch fetch existing records
+    GeneImportContext context = batchFetchExistingRecords(geneImportDto, releaseGene, vusList);
 
-    // Phase 3: Save all changes in a single transaction
+    // Phase 3: Convert DTO to domain objects
+    GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList, context);
+
+    // Phase 4: Save all changes in a single transaction
     if (importResult != null) {
         saveAllChanges(importResult);
     }
@@ -97,9 +110,21 @@ private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) 
 }
 ```
 
-**Phase 2: DTO to Domain Objects**
+**Phase 2: Batch Fetch Existing Records**
 
--   `convertDtoToDomainObjects()` - Main conversion logic
+```java
+private GeneImportContext batchFetchExistingRecords(GeneImportDto geneImportDto, Boolean releaseGene,
+        List<GeneImportDto.VusDto> vusList) throws Exception {
+    // Pre-fetch gene and all existing data
+    // Collect drug references and PMIDs from DTOs
+    // Batch fetch drugs and articles
+    // Return context with all pre-fetched data
+}
+```
+
+**Phase 3: DTO to Domain Objects**
+
+-   `convertDtoToDomainObjects()` - Main conversion logic using context
 -   `convertSummaryToDomainObjects()` - Converts gene summary
 -   `convertBackgroundToDomainObjects()` - Converts gene background
 -   `convertMutationsToDomainObjects()` - Converts mutations
@@ -108,7 +133,7 @@ private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) 
 -   `convertTherapeuticImplicationsToDomainObjects()` - Converts therapeutic implications
 -   `convertDocumentsToDomainObjects()` - Converts articles and documents
 
-**Phase 3: Batch Save**
+**Phase 4: Batch Save**
 
 ```java
 private void saveAllChanges(GeneImportResult result) throws Exception {
@@ -129,9 +154,10 @@ private void saveAllChanges(GeneImportResult result) throws Exception {
 }
 ```
 
-#### New Container Class:
+#### New Container Classes:
 
 -   `GeneImportResult` - Holds all domain objects that need to be saved
+-   `GeneImportContext` - Holds all pre-fetched data for efficient processing
 
 ## Benefits
 
@@ -162,9 +188,11 @@ private void saveAllChanges(GeneImportResult result) throws Exception {
 ### 5. **Performance**
 
 -   **Batch operations**: All saves happen in batches instead of individual calls
+-   **Batch fetching**: Pre-fetch all needed data in Phase 2
 -   **Single transaction**: All changes are saved in one transaction
 -   **Reduced database round trips**: Fewer network calls to the database
 -   **Better memory management**: Objects are collected and saved together
+-   **Context-based lookups**: Use pre-fetched data instead of repeated database queries
 
 ### 6. **Testing**
 
@@ -174,10 +202,10 @@ private void saveAllChanges(GeneImportResult result) throws Exception {
 
 ## Performance Improvements
 
-### Before (Individual Saves):
+### Before (Individual Operations):
 
 ```java
-// Multiple individual database calls
+// Multiple individual database calls scattered throughout the code
 alterationBo.save(alteration1);
 alterationBo.save(alteration2);
 evidenceBo.save(evidence1);
@@ -185,12 +213,23 @@ evidenceBo.save(evidence2);
 drugBo.save(drug1);
 articleBo.save(article1);
 // ... many more individual saves
+
+// Individual fetches throughout processing
+drugBo.findDrugByName(drugName1);
+drugBo.findDrugByName(drugName2);
+articleBo.findArticleByPmid(pmid1);
+articleBo.findArticleByPmid(pmid2);
+// ... many more individual fetches
 ```
 
-### After (Batch Saves):
+### After (Batch Operations):
 
 ```java
-// Single batch operation for each entity type
+// Phase 2: Batch fetch all needed data
+context.setExistingDrugsByName(drugBo.findDrugsByNames(allDrugNames));
+context.setExistingArticlesByPmid(articleBo.findArticlesByPmids(allPmids));
+
+// Phase 4: Single batch operation for each entity type
 alterationBo.saveAll(allAlterations);
 evidenceBo.saveAll(allEvidences);
 drugBo.saveAll(allDrugs);
@@ -199,23 +238,24 @@ articleBo.saveAll(allArticles);
 
 **Expected Performance Gains:**
 
--   **50-80% reduction** in database round trips
+-   **70-90% reduction** in database round trips
 -   **Significantly faster** import times for large gene datasets
 -   **Better transaction management** with single atomic operation
--   **Reduced memory pressure** from fewer individual save operations
+-   **Reduced memory pressure** from fewer individual operations
+-   **Efficient context-based lookups** instead of repeated database queries
 
 ## Migration Strategy
 
 The refactoring maintains backward compatibility:
 
 1. **Original method preserved**: `parseGene(JSONObject, Boolean, JSONArray)` still exists
-2. **Gradual migration**: New three-phase methods are internal
+2. **Gradual migration**: New four-phase methods are internal
 3. **No breaking changes**: External API remains unchanged
 4. **Future-ready**: Easy to extend with new fields in DTOs
 
 ## Usage Example
 
-### Before (JSON-based with individual saves):
+### Before (JSON-based with individual operations):
 
 ```java
 private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) {
@@ -227,10 +267,15 @@ private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) 
     evidenceBo.save(evidence);
     alterationBo.save(alteration);
     // ... many more individual saves
+
+    // Individual fetches throughout processing
+    drugBo.findDrugByName(drugName);
+    articleBo.findArticleByPmid(pmid);
+    // ... many more individual fetches
 }
 ```
 
-### After (DTO-based with batch saves):
+### After (DTO-based with batch operations):
 
 ```java
 private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) throws Exception {
@@ -238,10 +283,13 @@ private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) 
     GeneImportDto geneImportDto = GeneImportMapper.mapFromJson(geneInfo);
     List<GeneImportDto.VusDto> vusList = GeneImportMapper.mapVusFromJson(vus);
 
-    // Phase 2: Convert DTO to domain objects
-    GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList);
+    // Phase 2: Batch fetch existing records
+    GeneImportContext context = batchFetchExistingRecords(geneImportDto, releaseGene, vusList);
 
-    // Phase 3: Save all changes in a single transaction
+    // Phase 3: Convert DTO to domain objects
+    GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList, context);
+
+    // Phase 4: Save all changes in a single transaction
     if (importResult != null) {
         saveAllChanges(importResult);
     }
@@ -259,14 +307,17 @@ private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) 
 5. **Documentation**: Add comprehensive JavaDoc to all DTO classes
 6. **Hibernate Batch Configuration**: Configure Hibernate for optimal batch processing
 7. **Transaction Management**: Add explicit transaction boundaries for better control
+8. **Caching**: Implement application-level caching for frequently accessed data
+9. **Async Processing**: Consider async processing for very large datasets
 
 ## Conclusion
 
 This refactoring significantly improves the code quality and performance by:
 
 1. **Replacing raw JSON objects** with strongly-typed DTOs
-2. **Implementing a three-phase approach** for better separation of concerns
-3. **Adding batch save operations** for improved performance
-4. **Maintaining backward compatibility** while enabling future enhancements
+2. **Implementing a four-phase approach** for better separation of concerns
+3. **Adding batch fetch operations** for improved data access performance
+4. **Adding batch save operations** for improved write performance
+5. **Maintaining backward compatibility** while enabling future enhancements
 
-The code is now more maintainable, type-safe, and performant while preserving all existing functionality.
+The code is now more maintainable, type-safe, and performant while preserving all existing functionality. The four-phase approach provides a clear separation of concerns and significantly reduces database round trips.

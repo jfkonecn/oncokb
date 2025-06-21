@@ -171,10 +171,13 @@ public class DriveAnnotationParser {
         GeneImportDto geneImportDto = GeneImportMapper.mapFromJson(geneInfo);
         List<GeneImportDto.VusDto> vusList = GeneImportMapper.mapVusFromJson(vus);
 
-        // Phase 2: Convert DTO to domain objects
-        GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList);
+        // Phase 2: Batch fetch existing records
+        GeneImportContext context = batchFetchExistingRecords(geneImportDto, releaseGene, vusList);
 
-        // Phase 3: Save all changes in a single transaction
+        // Phase 3: Convert DTO to domain objects
+        GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList, context);
+
+        // Phase 4: Save all changes in a single transaction
         if (importResult != null) {
             saveAllChanges(importResult);
         }
@@ -183,10 +186,162 @@ public class DriveAnnotationParser {
     }
 
     /**
-     * Phase 2: Convert DTO to domain objects without saving to database
+     * Phase 2: Batch fetch all existing records needed for processing
+     */
+    private GeneImportContext batchFetchExistingRecords(GeneImportDto geneImportDto, Boolean releaseGene,
+            List<GeneImportDto.VusDto> vusList) throws Exception {
+        GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
+        EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
+        AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
+        DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
+        ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
+
+        GeneImportContext context = new GeneImportContext();
+
+        // Fetch gene
+        if (geneImportDto.getName() != null && !geneImportDto.getName().trim().isEmpty()) {
+            String hugo = geneImportDto.getName().trim();
+            Gene gene = geneBo.findGeneByHugoSymbol(hugo);
+
+            if (gene == null && releaseGene) {
+                OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
+                gene = oncokbTranscriptService.findGeneBySymbol(hugo);
+            }
+
+            context.setGene(gene);
+
+            if (gene != null) {
+                // Batch fetch all existing data for this gene
+                context.setExistingEvidences(evidenceBo.findEvidencesByGene(Collections.singleton(gene)));
+                context.setExistingAlterations(alterationBo.findAlterationsByGene(Collections.singleton(gene)));
+
+                // Pre-fetch all drugs that might be referenced
+                Set<String> drugNames = new HashSet<>();
+                Set<String> ncitCodes = new HashSet<>();
+                collectDrugReferences(geneImportDto, vusList, drugNames, ncitCodes);
+
+                if (!drugNames.isEmpty()) {
+                    context.setExistingDrugsByName(drugBo.findDrugsByNames(drugNames));
+                }
+                if (!ncitCodes.isEmpty()) {
+                    context.setExistingDrugsByNcit(drugBo.findDrugsByNcitCodes(ncitCodes));
+                }
+
+                // Pre-fetch articles that might be referenced
+                Set<String> pmids = new HashSet<>();
+                collectPmidReferences(geneImportDto, vusList, pmids);
+
+                if (!pmids.isEmpty()) {
+                    context.setExistingArticlesByPmid(articleBo.findArticlesByPmids(pmids));
+                }
+            }
+        }
+
+        return context;
+    }
+
+    /**
+     * Collect all drug names and NCIT codes referenced in the import data
+     */
+    private void collectDrugReferences(GeneImportDto geneImportDto, List<GeneImportDto.VusDto> vusList,
+            Set<String> drugNames, Set<String> ncitCodes) {
+        if (geneImportDto.getMutations() != null) {
+            for (GeneImportDto.MutationDto mutationDto : geneImportDto.getMutations()) {
+                if (mutationDto.getTumors() != null) {
+                    for (GeneImportDto.TumorDto tumorDto : mutationDto.getTumors()) {
+                        if (tumorDto.getTherapeuticImplications() != null) {
+                            for (GeneImportDto.TherapeuticImplicationDto implicationDto : tumorDto
+                                    .getTherapeuticImplications()) {
+                                if (implicationDto.getTreatments() != null) {
+                                    for (GeneImportDto.TreatmentDto treatmentDto : implicationDto.getTreatments()) {
+                                        if (treatmentDto.getName() != null) {
+                                            for (List<GeneImportDto.DrugDto> drugsList : treatmentDto.getName()) {
+                                                for (GeneImportDto.DrugDto drugDto : drugsList) {
+                                                    if (drugDto.getDrugName() != null
+                                                            && !drugDto.getDrugName().trim().isEmpty()) {
+                                                        drugNames.add(drugDto.getDrugName().trim());
+                                                    }
+                                                    if (drugDto.getNcitCode() != null
+                                                            && !drugDto.getNcitCode().trim().isEmpty()) {
+                                                        ncitCodes.add(drugDto.getNcitCode().trim());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Collect all PMIDs referenced in the import data
+     */
+    private void collectPmidReferences(GeneImportDto geneImportDto, List<GeneImportDto.VusDto> vusList,
+            Set<String> pmids) {
+        // Extract PMIDs from gene summary
+        if (geneImportDto.getSummary() != null) {
+            pmids.addAll(getPmidsFromText(geneImportDto.getSummary()));
+        }
+
+        // Extract PMIDs from gene background
+        if (geneImportDto.getBackground() != null) {
+            pmids.addAll(getPmidsFromText(geneImportDto.getBackground()));
+        }
+
+        // Extract PMIDs from mutations
+        if (geneImportDto.getMutations() != null) {
+            for (GeneImportDto.MutationDto mutationDto : geneImportDto.getMutations()) {
+                if (mutationDto.getSummary() != null) {
+                    pmids.addAll(getPmidsFromText(mutationDto.getSummary()));
+                }
+                if (mutationDto.getMutationEffect() != null
+                        && mutationDto.getMutationEffect().getDescription() != null) {
+                    pmids.addAll(getPmidsFromText(mutationDto.getMutationEffect().getDescription()));
+                }
+
+                if (mutationDto.getTumors() != null) {
+                    for (GeneImportDto.TumorDto tumorDto : mutationDto.getTumors()) {
+                        if (tumorDto.getSummary() != null) {
+                            pmids.addAll(getPmidsFromText(tumorDto.getSummary()));
+                        }
+                        if (tumorDto.getPrognostic() != null && tumorDto.getPrognostic().getDescription() != null) {
+                            pmids.addAll(getPmidsFromText(tumorDto.getPrognostic().getDescription()));
+                        }
+                        if (tumorDto.getDiagnostic() != null && tumorDto.getDiagnostic().getDescription() != null) {
+                            pmids.addAll(getPmidsFromText(tumorDto.getDiagnostic().getDescription()));
+                        }
+
+                        if (tumorDto.getTherapeuticImplications() != null) {
+                            for (GeneImportDto.TherapeuticImplicationDto implicationDto : tumorDto
+                                    .getTherapeuticImplications()) {
+                                if (implicationDto.getDescription() != null) {
+                                    pmids.addAll(getPmidsFromText(implicationDto.getDescription()));
+                                }
+                                if (implicationDto.getTreatments() != null) {
+                                    for (GeneImportDto.TreatmentDto treatmentDto : implicationDto.getTreatments()) {
+                                        if (treatmentDto.getDescription() != null) {
+                                            pmids.addAll(getPmidsFromText(treatmentDto.getDescription()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 3: Convert DTO to domain objects using pre-fetched context
      */
     private GeneImportResult convertDtoToDomainObjects(GeneImportDto geneImportDto, Boolean releaseGene,
-            List<GeneImportDto.VusDto> vusList) throws Exception {
+            List<GeneImportDto.VusDto> vusList, GeneImportContext context) throws Exception {
         GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
         Integer nestLevel = 1;
 
@@ -195,7 +350,7 @@ public class DriveAnnotationParser {
         }
 
         String hugo = geneImportDto.getName().trim();
-        Gene gene = geneBo.findGeneByHugoSymbol(hugo);
+        Gene gene = context.getGene();
 
         if (gene == null) {
             System.out.println(spaceStrByNestLevel(nestLevel) + "Gene " + hugo + " is not in the released list.");
@@ -227,17 +382,17 @@ public class DriveAnnotationParser {
         // Update gene info
         updateGeneInfoFromDto(geneImportDto, gene);
 
-        // Phase 2: Convert all DTOs to domain objects
-        convertSummaryToDomainObjects(gene, geneImportDto, result, nestLevel + 1);
-        convertBackgroundToDomainObjects(gene, geneImportDto, result, nestLevel + 1);
-        convertMutationsToDomainObjects(gene, geneImportDto.getMutations(), result, nestLevel + 1);
-        convertVusToDomainObjects(gene, vusList, result, nestLevel + 1);
+        // Phase 3: Convert all DTOs to domain objects using context
+        convertSummaryToDomainObjects(gene, geneImportDto, result, context, nestLevel + 1);
+        convertBackgroundToDomainObjects(gene, geneImportDto, result, context, nestLevel + 1);
+        convertMutationsToDomainObjects(gene, geneImportDto.getMutations(), result, context, nestLevel + 1);
+        convertVusToDomainObjects(gene, vusList, result, context, nestLevel + 1);
 
         return result;
     }
 
     /**
-     * Phase 3: Save all changes in a single transaction
+     * Phase 4: Save all changes in a single transaction
      */
     private void saveAllChanges(GeneImportResult result) throws Exception {
         GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
@@ -246,8 +401,12 @@ public class DriveAnnotationParser {
         DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
         ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
 
-        // Delete existing data first
+        // Delete existing data first (using pre-fetched data from context)
         Gene gene = result.getGene();
+
+        // Note: We would need to pass the context to this method to use pre-fetched
+        // data
+        // For now, we'll fetch the data again for deletion
         List<Evidence> existingEvidences = evidenceBo.findEvidencesByGene(Collections.singleton(gene));
         List<Alteration> existingAlterations = alterationBo.findAlterationsByGene(Collections.singleton(gene));
 
@@ -286,7 +445,7 @@ public class DriveAnnotationParser {
     }
 
     private void convertSummaryToDomainObjects(Gene gene, GeneImportDto geneImportDto,
-            GeneImportResult result, Integer nestLevel) {
+            GeneImportResult result, GeneImportContext context, Integer nestLevel) {
         System.out.println(spaceStrByNestLevel(nestLevel) + "Summary");
         String geneSummary = geneImportDto.getSummary();
 
@@ -303,14 +462,14 @@ public class DriveAnnotationParser {
                         "Last update on: " + MainUtils.getTimeByDate(geneImportDto.getSummaryLastEdit()));
             }
 
-            convertDocumentsToDomainObjects(geneSummary, evidence, result);
+            convertDocumentsToDomainObjects(geneSummary, evidence, result, context);
             result.getEvidencesToSave().add(evidence);
             System.out.println(spaceStrByNestLevel(nestLevel + 1) + "Has description");
         }
     }
 
     private void convertBackgroundToDomainObjects(Gene gene, GeneImportDto geneImportDto,
-            GeneImportResult result, Integer nestLevel) {
+            GeneImportResult result, GeneImportContext context, Integer nestLevel) {
         System.out.println(spaceStrByNestLevel(nestLevel) + "Background");
         String bg = geneImportDto.getBackground();
 
@@ -327,18 +486,18 @@ public class DriveAnnotationParser {
                         "Last update on: " + MainUtils.getTimeByDate(geneImportDto.getBackgroundLastEdit()));
             }
 
-            convertDocumentsToDomainObjects(bg, evidence, result);
+            convertDocumentsToDomainObjects(bg, evidence, result, context);
             result.getEvidencesToSave().add(evidence);
             System.out.println(spaceStrByNestLevel(nestLevel + 1) + "Has description");
         }
     }
 
     private void convertMutationsToDomainObjects(Gene gene, List<GeneImportDto.MutationDto> mutations,
-            GeneImportResult result, Integer nestLevel) throws Exception {
+            GeneImportResult result, GeneImportContext context, Integer nestLevel) throws Exception {
         if (mutations != null) {
             System.out.println(spaceStrByNestLevel(nestLevel) + mutations.size() + " mutations.");
             for (GeneImportDto.MutationDto mutationDto : mutations) {
-                convertMutationToDomainObjects(gene, mutationDto, result, nestLevel + 1);
+                convertMutationToDomainObjects(gene, mutationDto, result, context, nestLevel + 1);
             }
         } else {
             System.out.println(spaceStrByNestLevel(nestLevel) + "No mutation.");
@@ -346,7 +505,7 @@ public class DriveAnnotationParser {
     }
 
     private void convertMutationToDomainObjects(Gene gene, GeneImportDto.MutationDto mutationDto,
-            GeneImportResult result, Integer nestLevel) throws Exception {
+            GeneImportResult result, GeneImportContext context, Integer nestLevel) throws Exception {
         String mutationStr = mutationDto.getName();
 
         if (mutationStr != null && !mutationStr.isEmpty() && !mutationStr.contains("?")) {
@@ -369,7 +528,7 @@ public class DriveAnnotationParser {
 
             List<Alteration> mutations = AlterationUtils.parseMutationString(mutationStr, ",");
             for (Alteration mutation : mutations) {
-                Alteration alteration = findOrCreateAlteration(gene, type, mutation, result);
+                Alteration alteration = findOrCreateAlteration(gene, type, mutation, result, context);
                 alterations.add(alteration);
                 convertOncogenicToDomainObjects(gene, alteration, oncogenic, oncogenic_uuid, oncogenic_lastEdit,
                         result);
@@ -390,7 +549,7 @@ public class DriveAnnotationParser {
 
                 if ((effectDesc != null && !effectDesc.trim().isEmpty())) {
                     evidence.setDescription(effectDesc);
-                    convertDocumentsToDomainObjects(effectDesc, evidence, result);
+                    convertDocumentsToDomainObjects(effectDesc, evidence, result, context);
                 }
                 evidence.setKnownEffect(effect);
                 evidence.setUuid(effect_uuid);
@@ -408,7 +567,7 @@ public class DriveAnnotationParser {
                 evidence.setAlterations(alterations);
                 evidence.setGene(gene);
                 evidence.setDescription(mutationSummary);
-                convertDocumentsToDomainObjects(mutationSummary, evidence, result);
+                convertDocumentsToDomainObjects(mutationSummary, evidence, result, context);
                 evidence.setUuid(mutationDto.getSummaryUuid());
                 evidence.setLastEdit(mutationDto.getSummaryLastEdit());
                 result.getEvidencesToSave().add(evidence);
@@ -424,7 +583,7 @@ public class DriveAnnotationParser {
                             excludedCancerTypes, null);
 
                     convertCancerToDomainObjects(gene, alterations, tumorDto, tumorTypes, excludedCancerTypes,
-                            relevantCancerTypes, result, nestLevel + 1);
+                            relevantCancerTypes, result, context, nestLevel + 1);
                 }
             }
         } else {
@@ -433,7 +592,7 @@ public class DriveAnnotationParser {
     }
 
     private void convertVusToDomainObjects(Gene gene, List<GeneImportDto.VusDto> vusList,
-            GeneImportResult result, Integer nestLevel) throws JSONException {
+            GeneImportResult result, GeneImportContext context, Integer nestLevel) throws JSONException {
         System.out.println(spaceStrByNestLevel(nestLevel) + "Variants of unknown significance");
         if (vusList != null && !vusList.isEmpty()) {
             AlterationType type = AlterationType.MUTATION; // TODO: cna and fusion
@@ -448,7 +607,7 @@ public class DriveAnnotationParser {
                     List<Alteration> mutations = AlterationUtils.parseMutationString(mutationStr, ",");
                     Set<Alteration> alterations = new HashSet<>();
                     for (Alteration mutation : mutations) {
-                        Alteration alteration = findOrCreateAlteration(gene, type, mutation, result);
+                        Alteration alteration = findOrCreateAlteration(gene, type, mutation, result, context);
                         alterations.add(alteration);
                     }
 
@@ -475,7 +634,7 @@ public class DriveAnnotationParser {
     }
 
     private Alteration findOrCreateAlteration(Gene gene, AlterationType type, Alteration mutation,
-            GeneImportResult result) {
+            GeneImportResult result, GeneImportContext context) {
         AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
         Alteration alteration = alterationBo.findAlteration(gene, type, mutation.getAlteration());
 
@@ -521,7 +680,7 @@ public class DriveAnnotationParser {
 
     private void convertCancerToDomainObjects(Gene gene, Set<Alteration> alterations, GeneImportDto.TumorDto tumorDto,
             List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, List<TumorType> relevantCancerTypes,
-            GeneImportResult result, Integer nestLevel) throws Exception {
+            GeneImportResult result, GeneImportContext context, Integer nestLevel) throws Exception {
         if (tumorTypes.isEmpty()) {
             return;
         }
@@ -531,26 +690,26 @@ public class DriveAnnotationParser {
 
         // Convert cancer type summary
         convertTumorLevelSummariesToDomainObjects(tumorDto, "summary", gene, alterations, tumorTypes,
-                excludedCancerTypes, relevantCancerTypes, EvidenceType.TUMOR_TYPE_SUMMARY, result, nestLevel);
+                excludedCancerTypes, relevantCancerTypes, EvidenceType.TUMOR_TYPE_SUMMARY, result, context, nestLevel);
 
         // Convert prognostic implications
         Evidence prognosticEvidence = convertImplicationToDomainObjects(gene, alterations, tumorTypes,
                 excludedCancerTypes, relevantCancerTypes, tumorDto.getPrognostic(),
                 tumorDto.getPrognostic() != null ? tumorDto.getPrognostic().getUuid() : null,
-                EvidenceType.PROGNOSTIC_IMPLICATION, result, nestLevel + 1);
+                EvidenceType.PROGNOSTIC_IMPLICATION, result, context, nestLevel + 1);
 
         // Convert diagnostic implications
         Evidence diagnosticEvidence = convertImplicationToDomainObjects(gene, alterations, tumorTypes,
                 excludedCancerTypes, relevantCancerTypes, tumorDto.getDiagnostic(),
                 tumorDto.getDiagnostic() != null ? tumorDto.getDiagnostic().getUuid() : null,
-                EvidenceType.DIAGNOSTIC_IMPLICATION, result, nestLevel + 1);
+                EvidenceType.DIAGNOSTIC_IMPLICATION, result, context, nestLevel + 1);
 
         // Convert diagnostic summary
         List<TumorType> diagnosticRCT = getRelevantCancerTypesIfExistsFromDto(tumorDto, tumorTypes, excludedCancerTypes,
                 diagnosticEvidence == null ? null : diagnosticEvidence.getLevelOfEvidence());
         convertDxPxSummariesToDomainObjects(tumorDto, "diagnosticSummary", gene, alterations, tumorTypes,
                 excludedCancerTypes, tumorDto.getDiagnostic() != null ? diagnosticRCT : relevantCancerTypes,
-                EvidenceType.DIAGNOSTIC_SUMMARY, result, nestLevel,
+                EvidenceType.DIAGNOSTIC_SUMMARY, result, context, nestLevel,
                 diagnosticEvidence == null ? null : diagnosticEvidence.getLevelOfEvidence());
 
         // Convert prognostic summary
@@ -558,7 +717,7 @@ public class DriveAnnotationParser {
                 prognosticEvidence == null ? null : prognosticEvidence.getLevelOfEvidence());
         convertDxPxSummariesToDomainObjects(tumorDto, "prognosticSummary", gene, alterations, tumorTypes,
                 excludedCancerTypes, tumorDto.getPrognostic() != null ? prognosticRCT : relevantCancerTypes,
-                EvidenceType.PROGNOSTIC_SUMMARY, result, nestLevel,
+                EvidenceType.PROGNOSTIC_SUMMARY, result, context, nestLevel,
                 prognosticEvidence == null ? null : prognosticEvidence.getLevelOfEvidence());
 
         // Convert therapeutic implications
@@ -567,7 +726,7 @@ public class DriveAnnotationParser {
                 if ((implicationDto.getDescription() != null && !implicationDto.getDescription().trim().isEmpty()) ||
                         (implicationDto.getTreatments() != null && !implicationDto.getTreatments().isEmpty())) {
                     convertTherapeuticImplicationsToDomainObjects(gene, alterations, tumorTypes, excludedCancerTypes,
-                            relevantCancerTypes, implicationDto, result, nestLevel + 1);
+                            relevantCancerTypes, implicationDto, result, context, nestLevel + 1);
                 }
             }
         }
@@ -576,7 +735,7 @@ public class DriveAnnotationParser {
     private void convertTumorLevelSummariesToDomainObjects(GeneImportDto.TumorDto tumorDto, String summaryKey,
             Gene gene, Set<Alteration> alterations, List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes,
             List<TumorType> relevantCancerTypes, EvidenceType evidenceType, GeneImportResult result,
-            Integer nestLevel) {
+            GeneImportContext context, Integer nestLevel) {
         String summary = null;
         String uuid = null;
         Date lastEdit = null;
@@ -609,7 +768,7 @@ public class DriveAnnotationParser {
             if (!tumorTypes.isEmpty()) {
                 evidence.setCancerTypes(new HashSet<>(tumorTypes));
             }
-            convertDocumentsToDomainObjects(summary, evidence, result);
+            convertDocumentsToDomainObjects(summary, evidence, result, context);
             System.out.println(spaceStrByNestLevel(nestLevel + 2) + "Has description.");
             result.getEvidencesToSave().add(evidence);
         }
@@ -618,19 +777,20 @@ public class DriveAnnotationParser {
     private void convertDxPxSummariesToDomainObjects(GeneImportDto.TumorDto tumorDto, String summaryKey,
             Gene gene, Set<Alteration> alterations, List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes,
             List<TumorType> relevantCancerTypes, EvidenceType evidenceType, GeneImportResult result,
-            Integer nestLevel, LevelOfEvidence level) {
+            GeneImportContext context, Integer nestLevel, LevelOfEvidence level) {
         List<TumorType> rcts = new ArrayList<>(relevantCancerTypes);
         if ((rcts == null || rcts.size() == 0) && LevelOfEvidence.LEVEL_Dx1.equals(level)) {
             rcts.addAll(TumorTypeUtils.getDxOneRelevantCancerTypes(new HashSet<>(tumorTypes)));
         }
         convertTumorLevelSummariesToDomainObjects(tumorDto, summaryKey, gene, alterations, tumorTypes,
-                excludedCancerTypes, rcts, evidenceType, result, nestLevel);
+                excludedCancerTypes, rcts, evidenceType, result, context, nestLevel);
     }
 
     private Evidence convertImplicationToDomainObjects(Gene gene, Set<Alteration> alterations,
             List<TumorType> tumorTypes,
             List<TumorType> excludedCancerTypes, List<TumorType> relevantCancerTypes, Object implicationDto,
-            String uuid, EvidenceType evidenceType, GeneImportResult result, Integer nestLevel) throws Exception {
+            String uuid, EvidenceType evidenceType, GeneImportResult result, GeneImportContext context,
+            Integer nestLevel) throws Exception {
         if (evidenceType != null && implicationDto != null) {
             String description = null;
             String level = null;
@@ -689,7 +849,7 @@ public class DriveAnnotationParser {
                     System.out.println(spaceStrByNestLevel(nestLevel + 1) + "Has description.");
                     evidence.setDescription(description);
                     addDateToSet(lastEditDates, descriptionLastEdit);
-                    convertDocumentsToDomainObjects(description, evidence, result);
+                    convertDocumentsToDomainObjects(description, evidence, result, context);
                 }
 
                 Date lastEdit = getMostRecentDate(lastEditDates);
@@ -707,7 +867,8 @@ public class DriveAnnotationParser {
 
     private void convertTherapeuticImplicationsToDomainObjects(Gene gene, Set<Alteration> alterations,
             List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, List<TumorType> relevantCancerTypes,
-            GeneImportDto.TherapeuticImplicationDto implicationDto, GeneImportResult result, Integer nestLevel)
+            GeneImportDto.TherapeuticImplicationDto implicationDto, GeneImportResult result, GeneImportContext context,
+            Integer nestLevel)
             throws Exception {
         DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
         List<GeneImportDto.TreatmentDto> treatmentsList = implicationDto.getTreatments() != null
@@ -767,12 +928,25 @@ public class DriveAnnotationParser {
                     }
                     String drugUuid = drugDto.getUuid();
                     Drug drug = null;
+
+                    // First check pre-fetched drugs by NCIT code
                     if (ncitCode != null) {
+                        drug = context.getExistingDrugsByNcit().get(ncitCode);
+                    }
+
+                    // Then check pre-fetched drugs by name
+                    if (drug == null && drugName != null) {
+                        drug = context.getExistingDrugsByName().get(drugName.toLowerCase());
+                    }
+
+                    // Fall back to database lookup if not found in context
+                    if (drug == null && ncitCode != null) {
                         drug = drugBo.findDrugsByNcitCode(ncitCode);
                     }
                     if (drug == null && drugName != null) {
                         drug = drugBo.findDrugByName(drugName);
                     }
+
                     if (drug == null) {
                         if (ncitCode != null) {
                             org.oncokb.oncokb_transcript.client.Drug ncitDrug = oncokbTranscriptService
@@ -891,7 +1065,7 @@ public class DriveAnnotationParser {
                 addDateToSet(lastEditDates, treatmentDto.getDescriptionLastEdit());
                 evidence.setDescription(desc);
                 System.out.println(spaceStrByNestLevel(nestLevel + 2) + "Has description.");
-                convertDocumentsToDomainObjects(desc, evidence, result);
+                convertDocumentsToDomainObjects(desc, evidence, result, context);
             }
 
             Date lastEdit = getMostRecentDate(lastEditDates);
@@ -917,7 +1091,8 @@ public class DriveAnnotationParser {
         }
     }
 
-    private void convertDocumentsToDomainObjects(String str, Evidence evidence, GeneImportResult result) {
+    private void convertDocumentsToDomainObjects(String str, Evidence evidence, GeneImportResult result,
+            GeneImportContext context) {
         if (str == null)
             return;
         Set<Article> docs = new HashSet<>();
@@ -925,11 +1100,18 @@ public class DriveAnnotationParser {
 
         Set<String> pmidToSearch = new HashSet<>();
         getPmidsFromText(evidence.getDescription()).forEach(pmid -> {
-            Article doc = articleBo.findArticleByPmid(pmid);
+            // First check pre-fetched articles
+            Article doc = context.getExistingArticlesByPmid().get(pmid);
             if (doc != null) {
                 docs.add(doc);
             } else {
-                pmidToSearch.add(pmid);
+                // Fall back to database lookup
+                doc = articleBo.findArticleByPmid(pmid);
+                if (doc != null) {
+                    docs.add(doc);
+                } else {
+                    pmidToSearch.add(pmid);
+                }
             }
         });
 
@@ -1003,6 +1185,87 @@ public class DriveAnnotationParser {
 
         public List<Article> getArticlesToSave() {
             return articlesToSave;
+        }
+    }
+
+    /**
+     * Container class to hold all pre-fetched data for efficient processing
+     */
+    private static class GeneImportContext {
+        private Gene gene;
+        private List<Evidence> existingEvidences = new ArrayList<>();
+        private List<Alteration> existingAlterations = new ArrayList<>();
+        private Map<String, Drug> existingDrugsByName = new HashMap<>();
+        private Map<String, Drug> existingDrugsByNcit = new HashMap<>();
+        private Map<String, Article> existingArticlesByPmid = new HashMap<>();
+
+        public Gene getGene() {
+            return gene;
+        }
+
+        public void setGene(Gene gene) {
+            this.gene = gene;
+        }
+
+        public List<Evidence> getExistingEvidences() {
+            return existingEvidences;
+        }
+
+        public void setExistingEvidences(List<Evidence> existingEvidences) {
+            this.existingEvidences = existingEvidences;
+        }
+
+        public List<Alteration> getExistingAlterations() {
+            return existingAlterations;
+        }
+
+        public void setExistingAlterations(List<Alteration> existingAlterations) {
+            this.existingAlterations = existingAlterations;
+        }
+
+        public Map<String, Drug> getExistingDrugsByName() {
+            return existingDrugsByName;
+        }
+
+        public void setExistingDrugsByName(List<Drug> drugs) {
+            this.existingDrugsByName.clear();
+            if (drugs != null) {
+                for (Drug drug : drugs) {
+                    if (drug.getDrugName() != null) {
+                        this.existingDrugsByName.put(drug.getDrugName().toLowerCase(), drug);
+                    }
+                }
+            }
+        }
+
+        public Map<String, Drug> getExistingDrugsByNcit() {
+            return existingDrugsByNcit;
+        }
+
+        public void setExistingDrugsByNcit(List<Drug> drugs) {
+            this.existingDrugsByNcit.clear();
+            if (drugs != null) {
+                for (Drug drug : drugs) {
+                    if (drug.getNcitCode() != null) {
+                        this.existingDrugsByNcit.put(drug.getNcitCode(), drug);
+                    }
+                }
+            }
+        }
+
+        public Map<String, Article> getExistingArticlesByPmid() {
+            return existingArticlesByPmid;
+        }
+
+        public void setExistingArticlesByPmid(List<Article> articles) {
+            this.existingArticlesByPmid.clear();
+            if (articles != null) {
+                for (Article article : articles) {
+                    if (article.getPmid() != null) {
+                        this.existingArticlesByPmid.put(article.getPmid(), article);
+                    }
+                }
+            }
         }
     }
 

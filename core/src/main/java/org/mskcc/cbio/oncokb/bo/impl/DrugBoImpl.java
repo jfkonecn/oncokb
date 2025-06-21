@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * @author jgao
@@ -55,6 +56,34 @@ public class DrugBoImpl extends GenericBoImpl<Drug, DrugDao> implements DrugBo {
     @Override
     public Drug findDrugsByNcitCode(String ncit) {
         return getDao().findDrugByNcitCode(ncit);
+    }
+
+    @Override
+    public List<Drug> findDrugsByNames(Set<String> drugNames) {
+        List<Drug> result = new ArrayList<>();
+        if (drugNames != null && !drugNames.isEmpty()) {
+            for (String drugName : drugNames) {
+                Drug drug = findDrugByName(drugName);
+                if (drug != null) {
+                    result.add(drug);
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<Drug> findDrugsByNcitCodes(Set<String> ncitCodes) {
+        List<Drug> result = new ArrayList<>();
+        if (ncitCodes != null && !ncitCodes.isEmpty()) {
+            for (String ncitCode : ncitCodes) {
+                Drug drug = findDrugsByNcitCode(ncitCode);
+                if (drug != null) {
+                    result.add(drug);
+                }
+            }
+        }
+        return result;
     }
 
     @Override
