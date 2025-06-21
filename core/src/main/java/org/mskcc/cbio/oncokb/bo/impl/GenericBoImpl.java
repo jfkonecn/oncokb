@@ -45,6 +45,7 @@ public class GenericBoImpl<T, DAO extends GenericDao> implements GenericBo<T> {
     public Integer countAll() {
         return dao.countAll();
     }
+
     @Override
     public void delete(T t) {
         dao.delete(t);
@@ -53,5 +54,14 @@ public class GenericBoImpl<T, DAO extends GenericDao> implements GenericBo<T> {
     @Override
     public void deleteAll(List<T> ts) {
         dao.deleteAll(ts);
+    }
+
+    @Override
+    public void saveAll(List<T> entities) {
+        if (entities != null && !entities.isEmpty()) {
+            for (T entity : entities) {
+                dao.save(entity);
+            }
+        }
     }
 }

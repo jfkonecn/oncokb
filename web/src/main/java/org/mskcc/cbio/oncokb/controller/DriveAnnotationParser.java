@@ -167,203 +167,200 @@ public class DriveAnnotationParser {
     }
 
     private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) throws Exception {
-        // Convert JSON to strongly-typed DTO
+        // Phase 1: Parse JSON and convert to DTO
         GeneImportDto geneImportDto = GeneImportMapper.mapFromJson(geneInfo);
         List<GeneImportDto.VusDto> vusList = GeneImportMapper.mapVusFromJson(vus);
 
-        return parseGeneFromDto(geneImportDto, releaseGene, vusList);
+        // Phase 2: Convert DTO to domain objects
+        GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList);
+
+        // Phase 3: Save all changes in a single transaction
+        if (importResult != null) {
+            saveAllChanges(importResult);
+        }
+
+        return importResult != null ? importResult.getGene() : null;
     }
 
-    private Gene parseGeneFromDto(GeneImportDto geneImportDto, Boolean releaseGene, List<GeneImportDto.VusDto> vusList)
-            throws Exception {
+    /**
+     * Phase 2: Convert DTO to domain objects without saving to database
+     */
+    private GeneImportResult convertDtoToDomainObjects(GeneImportDto geneImportDto, Boolean releaseGene,
+            List<GeneImportDto.VusDto> vusList) throws Exception {
         GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
         Integer nestLevel = 1;
 
-        if (geneImportDto.getName() != null && !geneImportDto.getName().trim().isEmpty()) {
-            String hugo = geneImportDto.getName().trim();
+        if (geneImportDto.getName() == null || geneImportDto.getName().trim().isEmpty()) {
+            return null;
+        }
 
-            if (hugo != null) {
-                Gene gene = geneBo.findGeneByHugoSymbol(hugo);
+        String hugo = geneImportDto.getName().trim();
+        Gene gene = geneBo.findGeneByHugoSymbol(hugo);
 
+        if (gene == null) {
+            System.out.println(spaceStrByNestLevel(nestLevel) + "Gene " + hugo + " is not in the released list.");
+            if (releaseGene) {
+                OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
+                gene = oncokbTranscriptService.findGeneBySymbol(hugo);
                 if (gene == null) {
-                    System.out
-                            .println(spaceStrByNestLevel(nestLevel) + "Gene " + hugo + " is not in the released list.");
-                    if (releaseGene) {
-                        OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
-                        gene = oncokbTranscriptService.findGeneBySymbol(hugo);
-                        if (gene == null) {
-                            System.out.println("!!!!!!!!!Could not find gene " + hugo + " either.");
-                            throw new IOException("!!!!!!!!!Could not find gene " + hugo + ".");
-                        } else {
-                            updateGeneInfoFromDto(geneImportDto, gene);
-                            geneBo.saveOrUpdate(gene);
-                        }
-                    } else {
-                        return null;
-                    }
+                    System.out.println("!!!!!!!!!Could not find gene " + hugo + " either.");
+                    throw new IOException("!!!!!!!!!Could not find gene " + hugo + ".");
                 }
-
-                if (gene != null) {
-                    System.out.println(spaceStrByNestLevel(nestLevel) + "Gene: " + gene.getHugoSymbol());
-                    updateGeneInfoFromDto(geneImportDto, gene);
-                    geneBo.update(gene);
-
-                    EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
-                    AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
-                    List<Evidence> evidences = evidenceBo.findEvidencesByGene(Collections.singleton(gene));
-                    List<Alteration> alterations = alterationBo.findAlterationsByGene(Collections.singleton(gene));
-
-                    for (Evidence evidence : evidences) {
-                        evidenceBo.delete(evidence);
-                    }
-
-                    for (Alteration alteration : alterations) {
-                        alterationBo.delete(alteration);
-                    }
-
-                    CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), false);
-
-                    // summary
-                    parseSummaryFromDto(gene, geneImportDto.getSummary(), geneImportDto.getSummaryUuid(),
-                            geneImportDto.getSummaryLastEdit(), nestLevel + 1);
-
-                    // background
-                    parseGeneBackgroundFromDto(gene, geneImportDto.getBackground(), geneImportDto.getBackgroundUuid(),
-                            geneImportDto.getBackgroundLastEdit(), nestLevel + 1);
-
-                    // mutations
-                    parseMutationsFromDto(gene, geneImportDto.getMutations(), nestLevel + 1);
-
-                    // Variants of unknown significance
-                    parseVUSFromDto(gene, vusList, nestLevel + 1);
-
-                    CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), true);
-                } else {
-                    System.out.print(spaceStrByNestLevel(nestLevel) + "No info about " + hugo);
-                }
-                return gene;
             } else {
-                System.out.println(spaceStrByNestLevel(nestLevel) + "No hugoSymbol available");
+                return null;
             }
         }
-        return null;
+
+        if (gene == null) {
+            System.out.print(spaceStrByNestLevel(nestLevel) + "No info about " + hugo);
+            return null;
+        }
+
+        System.out.println(spaceStrByNestLevel(nestLevel) + "Gene: " + gene.getHugoSymbol());
+
+        // Create result container
+        GeneImportResult result = new GeneImportResult();
+        result.setGene(gene);
+        result.setGeneImportDto(geneImportDto);
+        result.setVusList(vusList);
+
+        // Update gene info
+        updateGeneInfoFromDto(geneImportDto, gene);
+
+        // Phase 2: Convert all DTOs to domain objects
+        convertSummaryToDomainObjects(gene, geneImportDto, result, nestLevel + 1);
+        convertBackgroundToDomainObjects(gene, geneImportDto, result, nestLevel + 1);
+        convertMutationsToDomainObjects(gene, geneImportDto.getMutations(), result, nestLevel + 1);
+        convertVusToDomainObjects(gene, vusList, result, nestLevel + 1);
+
+        return result;
     }
 
-    private void updateGeneInfoFromDto(GeneImportDto geneImportDto, Gene gene) {
-        GeneImportDto.GeneTypeDto geneType = geneImportDto.getType();
-        String oncogene = geneType != null ? geneType.getOcg() : null;
-        String tsg = geneType != null ? geneType.getTsg() : null;
+    /**
+     * Phase 3: Save all changes in a single transaction
+     */
+    private void saveAllChanges(GeneImportResult result) throws Exception {
+        GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
+        EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
+        AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
+        DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
+        ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
 
-        if (oncogene != null) {
-            if (oncogene.equals("Oncogene")) {
-                gene.setOncogene(true);
-            } else {
-                gene.setOncogene(false);
-            }
+        // Delete existing data first
+        Gene gene = result.getGene();
+        List<Evidence> existingEvidences = evidenceBo.findEvidencesByGene(Collections.singleton(gene));
+        List<Alteration> existingAlterations = alterationBo.findAlterationsByGene(Collections.singleton(gene));
+
+        for (Evidence evidence : existingEvidences) {
+            evidenceBo.delete(evidence);
         }
-        if (tsg != null) {
-            if (tsg.equals("Tumor Suppressor")) {
-                gene.setTSG(true);
-            } else {
-                gene.setTSG(false);
-            }
+        for (Alteration alteration : existingAlterations) {
+            alterationBo.delete(alteration);
         }
 
-        String grch37Isoform = geneImportDto.getIsoformOverride();
-        String grch37RefSeq = geneImportDto.getDmpRefseqId();
-        String grch38Isoform = geneImportDto.getIsoformOverrideGrch38();
-        String grch38RefSeq = geneImportDto.getDmpRefseqIdGrch38();
+        // Update cache before saving new data
+        CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), false);
 
-        if (grch37Isoform != null) {
-            gene.setGrch37Isoform(grch37Isoform);
+        // Save all new data in batches
+        if (!result.getAlterationsToSave().isEmpty()) {
+            alterationBo.saveAll(result.getAlterationsToSave());
         }
-        if (grch37RefSeq != null) {
-            gene.setGrch37RefSeq(grch37RefSeq);
+
+        if (!result.getDrugsToSave().isEmpty()) {
+            drugBo.saveAll(result.getDrugsToSave());
         }
-        if (grch38Isoform != null) {
-            gene.setGrch38Isoform(grch38Isoform);
+
+        if (!result.getArticlesToSave().isEmpty()) {
+            articleBo.saveAll(result.getArticlesToSave());
         }
-        if (grch38RefSeq != null) {
-            gene.setGrch38RefSeq(grch38RefSeq);
+
+        if (!result.getEvidencesToSave().isEmpty()) {
+            evidenceBo.saveAll(result.getEvidencesToSave());
         }
+
+        // Update gene
+        geneBo.update(gene);
+
+        // Update cache after saving
+        CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), true);
     }
 
-    private void parseSummaryFromDto(Gene gene, String geneSummary, String uuid, Date lastEdit, Integer nestLevel) {
+    private void convertSummaryToDomainObjects(Gene gene, GeneImportDto geneImportDto,
+            GeneImportResult result, Integer nestLevel) {
         System.out.println(spaceStrByNestLevel(nestLevel) + "Summary");
-        // gene summary
+        String geneSummary = geneImportDto.getSummary();
+
         if (geneSummary != null && !geneSummary.isEmpty()) {
             Evidence evidence = new Evidence();
             evidence.setEvidenceType(EvidenceType.GENE_SUMMARY);
             evidence.setGene(gene);
             evidence.setDescription(geneSummary);
-            evidence.setUuid(uuid);
-            evidence.setLastEdit(lastEdit);
-            if (lastEdit != null) {
+            evidence.setUuid(geneImportDto.getSummaryUuid());
+            evidence.setLastEdit(geneImportDto.getSummaryLastEdit());
+
+            if (geneImportDto.getSummaryLastEdit() != null) {
                 System.out.println(spaceStrByNestLevel(nestLevel + 1) +
-                        "Last update on: " + MainUtils.getTimeByDate(lastEdit));
+                        "Last update on: " + MainUtils.getTimeByDate(geneImportDto.getSummaryLastEdit()));
             }
-            setDocuments(geneSummary, evidence);
-            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
-            evidenceBo.save(evidence);
+
+            convertDocumentsToDomainObjects(geneSummary, evidence, result);
+            result.getEvidencesToSave().add(evidence);
             System.out.println(spaceStrByNestLevel(nestLevel + 1) + "Has description");
         }
     }
 
-    private void parseGeneBackgroundFromDto(Gene gene, String bg, String uuid, Date lastEdit, Integer nestLevel) {
+    private void convertBackgroundToDomainObjects(Gene gene, GeneImportDto geneImportDto,
+            GeneImportResult result, Integer nestLevel) {
         System.out.println(spaceStrByNestLevel(nestLevel) + "Background");
+        String bg = geneImportDto.getBackground();
 
         if (bg != null && !bg.isEmpty()) {
             Evidence evidence = new Evidence();
             evidence.setEvidenceType(EvidenceType.GENE_BACKGROUND);
             evidence.setGene(gene);
             evidence.setDescription(bg);
-            evidence.setUuid(uuid);
-            evidence.setLastEdit(lastEdit);
-            if (lastEdit != null) {
+            evidence.setUuid(geneImportDto.getBackgroundUuid());
+            evidence.setLastEdit(geneImportDto.getBackgroundLastEdit());
+
+            if (geneImportDto.getBackgroundLastEdit() != null) {
                 System.out.println(spaceStrByNestLevel(nestLevel + 1) +
-                        "Last update on: " + MainUtils.getTimeByDate(lastEdit));
+                        "Last update on: " + MainUtils.getTimeByDate(geneImportDto.getBackgroundLastEdit()));
             }
-            setDocuments(bg, evidence);
-            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
-            evidenceBo.save(evidence);
+
+            convertDocumentsToDomainObjects(bg, evidence, result);
+            result.getEvidencesToSave().add(evidence);
             System.out.println(spaceStrByNestLevel(nestLevel + 1) + "Has description");
         }
     }
 
-    private void parseMutationsFromDto(Gene gene, List<GeneImportDto.MutationDto> mutations, Integer nestLevel)
-            throws Exception {
+    private void convertMutationsToDomainObjects(Gene gene, List<GeneImportDto.MutationDto> mutations,
+            GeneImportResult result, Integer nestLevel) throws Exception {
         if (mutations != null) {
             System.out.println(spaceStrByNestLevel(nestLevel) + mutations.size() + " mutations.");
             for (GeneImportDto.MutationDto mutationDto : mutations) {
-                parseMutationFromDto(gene, mutationDto, nestLevel + 1);
+                convertMutationToDomainObjects(gene, mutationDto, result, nestLevel + 1);
             }
         } else {
             System.out.println(spaceStrByNestLevel(nestLevel) + "No mutation.");
         }
     }
 
-    private void parseMutationFromDto(Gene gene, GeneImportDto.MutationDto mutationDto, Integer nestLevel)
-            throws Exception {
+    private void convertMutationToDomainObjects(Gene gene, GeneImportDto.MutationDto mutationDto,
+            GeneImportResult result, Integer nestLevel) throws Exception {
         String mutationStr = mutationDto.getName();
 
         if (mutationStr != null && !mutationStr.isEmpty() && !mutationStr.contains("?")) {
-            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
             System.out.println(spaceStrByNestLevel(nestLevel) + "Mutation: " + mutationStr);
 
-            AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
             AlterationType type = AlterationType.MUTATION; // TODO: cna and fusion
-
             Set<Alteration> alterations = new HashSet<>();
 
             GeneImportDto.MutationEffectDto mutationEffect = mutationDto.getMutationEffect();
-
             Oncogenicity oncogenic = getOncogenicityFromDto(mutationEffect);
             String oncogenic_uuid = mutationEffect != null ? mutationEffect.getOncogenicUuid() : null;
             Date oncogenic_lastEdit = mutationEffect != null ? mutationEffect.getOncogenicLastEdit() : null;
 
             Set<Date> lastEditDatesEffect = new HashSet<>();
-            Set<Date> lastReviewDatesEffect = new HashSet<>();
-
             String effect = mutationEffect != null ? mutationEffect.getEffect() : null;
             if (mutationEffect != null) {
                 addDateToSet(lastEditDatesEffect, mutationEffect.getEffectLastEdit());
@@ -372,25 +369,13 @@ public class DriveAnnotationParser {
 
             List<Alteration> mutations = AlterationUtils.parseMutationString(mutationStr, ",");
             for (Alteration mutation : mutations) {
-                Alteration alteration = alterationBo.findAlteration(gene, type, mutation.getAlteration());
-                if (alteration == null) {
-                    alteration = new Alteration();
-                    alteration.setGene(gene);
-                    alteration.setAlterationType(type);
-                    alteration.setAlteration(mutation.getAlteration());
-                    alteration.setName(mutation.getName());
-                    alteration.setReferenceGenomes(mutation.getReferenceGenomes());
-                    AlterationUtils.annotateAlteration(alteration, mutation.getAlteration());
-                    alterationBo.save(alteration);
-                } else if (!alteration.getReferenceGenomes().equals(mutation.getReferenceGenomes())) {
-                    alteration.setReferenceGenomes(mutation.getReferenceGenomes());
-                    alterationBo.save(alteration);
-                }
+                Alteration alteration = findOrCreateAlteration(gene, type, mutation, result);
                 alterations.add(alteration);
-                setOncogenic(gene, alteration, oncogenic, oncogenic_uuid, oncogenic_lastEdit);
+                convertOncogenicToDomainObjects(gene, alteration, oncogenic, oncogenic_uuid, oncogenic_lastEdit,
+                        result);
             }
 
-            // mutation effect
+            // Convert mutation effect
             String effectDesc = mutationEffect != null ? mutationEffect.getDescription() : null;
             if (mutationEffect != null) {
                 addDateToSet(lastEditDatesEffect, mutationEffect.getDescriptionLastEdit());
@@ -398,7 +383,6 @@ public class DriveAnnotationParser {
 
             if (!com.mysql.jdbc.StringUtils.isNullOrEmpty(effect)
                     || !com.mysql.jdbc.StringUtils.isNullOrEmpty(effectDesc)) {
-                // save
                 Evidence evidence = new Evidence();
                 evidence.setEvidenceType(EvidenceType.MUTATION_EFFECT);
                 evidence.setAlterations(alterations);
@@ -406,17 +390,17 @@ public class DriveAnnotationParser {
 
                 if ((effectDesc != null && !effectDesc.trim().isEmpty())) {
                     evidence.setDescription(effectDesc);
-                    setDocuments(effectDesc, evidence);
+                    convertDocumentsToDomainObjects(effectDesc, evidence, result);
                 }
                 evidence.setKnownEffect(effect);
                 evidence.setUuid(effect_uuid);
 
                 Date effect_lastEdit = getMostRecentDate(lastEditDatesEffect);
                 evidence.setLastEdit(effect_lastEdit);
-                evidenceBo.save(evidence);
+                result.getEvidencesToSave().add(evidence);
             }
 
-            // add mutation summary
+            // Convert mutation summary
             String mutationSummary = mutationDto.getSummary();
             if (StringUtils.isNotEmpty(mutationSummary)) {
                 Evidence evidence = new Evidence();
@@ -424,13 +408,13 @@ public class DriveAnnotationParser {
                 evidence.setAlterations(alterations);
                 evidence.setGene(gene);
                 evidence.setDescription(mutationSummary);
-                setDocuments(mutationSummary, evidence);
+                convertDocumentsToDomainObjects(mutationSummary, evidence, result);
                 evidence.setUuid(mutationDto.getSummaryUuid());
                 evidence.setLastEdit(mutationDto.getSummaryLastEdit());
-                evidenceBo.save(evidence);
+                result.getEvidencesToSave().add(evidence);
             }
 
-            // cancers
+            // Convert cancers
             if (mutationDto.getTumors() != null && !mutationDto.getTumors().isEmpty()) {
                 System.out.println(spaceStrByNestLevel(nestLevel) + "Tumor Types");
                 for (GeneImportDto.TumorDto tumorDto : mutationDto.getTumors()) {
@@ -439,8 +423,8 @@ public class DriveAnnotationParser {
                     List<TumorType> relevantCancerTypes = getRelevantCancerTypesIfExistsFromDto(tumorDto, tumorTypes,
                             excludedCancerTypes, null);
 
-                    parseCancerFromDto(gene, alterations, tumorDto, tumorTypes, excludedCancerTypes,
-                            relevantCancerTypes, nestLevel + 1);
+                    convertCancerToDomainObjects(gene, alterations, tumorDto, tumorTypes, excludedCancerTypes,
+                            relevantCancerTypes, result, nestLevel + 1);
                 }
             }
         } else {
@@ -448,12 +432,10 @@ public class DriveAnnotationParser {
         }
     }
 
-    private void parseVUSFromDto(Gene gene, List<GeneImportDto.VusDto> vusList, Integer nestLevel)
-            throws JSONException {
+    private void convertVusToDomainObjects(Gene gene, List<GeneImportDto.VusDto> vusList,
+            GeneImportResult result, Integer nestLevel) throws JSONException {
         System.out.println(spaceStrByNestLevel(nestLevel) + "Variants of unknown significance");
         if (vusList != null && !vusList.isEmpty()) {
-            AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
-            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
             AlterationType type = AlterationType.MUTATION; // TODO: cna and fusion
 
             System.out.println("\t" + vusList.size() + " VUSs");
@@ -466,20 +448,7 @@ public class DriveAnnotationParser {
                     List<Alteration> mutations = AlterationUtils.parseMutationString(mutationStr, ",");
                     Set<Alteration> alterations = new HashSet<>();
                     for (Alteration mutation : mutations) {
-                        Alteration alteration = alterationBo.findAlteration(gene, type, mutation.getAlteration());
-                        if (alteration == null) {
-                            alteration = new Alteration();
-                            alteration.setGene(gene);
-                            alteration.setAlterationType(type);
-                            alteration.setAlteration(mutation.getAlteration());
-                            alteration.setName(mutation.getName());
-                            alteration.setReferenceGenomes(mutation.getReferenceGenomes());
-                            AlterationUtils.annotateAlteration(alteration, mutation.getAlteration());
-                            alterationBo.save(alteration);
-                        } else if (!alteration.getReferenceGenomes().equals(mutation.getReferenceGenomes())) {
-                            alteration.setReferenceGenomes(mutation.getReferenceGenomes());
-                            alterationBo.save(alteration);
-                        }
+                        Alteration alteration = findOrCreateAlteration(gene, type, mutation, result);
                         alterations.add(alteration);
                     }
 
@@ -495,7 +464,7 @@ public class DriveAnnotationParser {
                         System.out.println(spaceStrByNestLevel(nestLevel + 1) + "WARNING: " + mutationStr
                                 + " do not have last update.");
                     }
-                    evidenceBo.save(evidence);
+                    result.getEvidencesToSave().add(evidence);
                 }
                 if (i % 10 == 9)
                     System.out.println("\t\tImported " + (i + 1));
@@ -505,59 +474,54 @@ public class DriveAnnotationParser {
         }
     }
 
-    private Oncogenicity getOncogenicityFromDto(GeneImportDto.MutationEffectDto mutationEffect) {
-        Oncogenicity oncogenic = null;
-        if (mutationEffect != null && mutationEffect.getOncogenic() != null
-                && !mutationEffect.getOncogenic().isEmpty()) {
-            oncogenic = getOncogenicityByString(mutationEffect.getOncogenic());
+    private Alteration findOrCreateAlteration(Gene gene, AlterationType type, Alteration mutation,
+            GeneImportResult result) {
+        AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
+        Alteration alteration = alterationBo.findAlteration(gene, type, mutation.getAlteration());
+
+        if (alteration == null) {
+            alteration = new Alteration();
+            alteration.setGene(gene);
+            alteration.setAlterationType(type);
+            alteration.setAlteration(mutation.getAlteration());
+            alteration.setName(mutation.getName());
+            alteration.setReferenceGenomes(mutation.getReferenceGenomes());
+            AlterationUtils.annotateAlteration(alteration, mutation.getAlteration());
+            result.getAlterationsToSave().add(alteration);
+        } else if (!alteration.getReferenceGenomes().equals(mutation.getReferenceGenomes())) {
+            alteration.setReferenceGenomes(mutation.getReferenceGenomes());
+            result.getAlterationsToSave().add(alteration);
         }
-        return oncogenic;
+
+        return alteration;
     }
 
-    private List<TumorType> getTumorTypesFromDto(List<GeneImportDto.TumorTypeDto> tumorTypeDtos) throws Exception {
-        if (tumorTypeDtos == null) {
-            return new ArrayList<>();
-        }
-
-        List<TumorType> tumorTypes = new ArrayList<>();
-        for (GeneImportDto.TumorTypeDto ttDto : tumorTypeDtos) {
-            String code = ttDto.getCode();
-            String mainType = ttDto.getMainType();
-            if (code != null) {
-                TumorType matchedTumorType = ApplicationContextSingleton.getTumorTypeBo().getByCode(code);
-                if (matchedTumorType == null) {
-                    throw new Exception("The tumor type code does not exist: " + code);
-                } else {
-                    tumorTypes.add(matchedTumorType);
-                }
-            } else if (mainType != null) {
-                TumorType matchedTumorType = ApplicationContextSingleton.getTumorTypeBo().getByMainType(mainType);
-                if (matchedTumorType == null) {
-                    throw new Exception("The tumor main type does not exist: " + mainType);
-                } else {
-                    tumorTypes.add(matchedTumorType);
-                }
-            } else {
-                throw new Exception("The tumor type does not exist. Maintype: " + mainType + ". Subtype: " + code);
+    private void convertOncogenicToDomainObjects(Gene gene, Alteration alteration, Oncogenicity oncogenic,
+            String uuid, Date lastEdit, GeneImportResult result) {
+        if (alteration != null && gene != null && oncogenic != null) {
+            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
+            List<Evidence> evidences = evidenceBo.findEvidencesByAlteration(Collections.singleton(alteration),
+                    Collections.singleton(EvidenceType.ONCOGENIC));
+            if (evidences.isEmpty()) {
+                Evidence evidence = new Evidence();
+                evidence.setGene(gene);
+                evidence.setAlterations(Collections.singleton(alteration));
+                evidence.setEvidenceType(EvidenceType.ONCOGENIC);
+                evidence.setKnownEffect(oncogenic.getOncogenic());
+                evidence.setUuid(uuid);
+                evidence.setLastEdit(lastEdit);
+                result.getEvidencesToSave().add(evidence);
+            } else if (Oncogenicity.compare(oncogenic, Oncogenicity.getByEvidence(evidences.get(0))) > 0) {
+                evidences.get(0).setKnownEffect(oncogenic.getOncogenic());
+                evidences.get(0).setLastEdit(lastEdit);
+                result.getEvidencesToSave().add(evidences.get(0));
             }
         }
-        return tumorTypes;
     }
 
-    private List<TumorType> getRelevantCancerTypesIfExistsFromDto(GeneImportDto.TumorDto tumorDto,
-            List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, LevelOfEvidence level) throws Exception {
-        List<TumorType> relevantCancerTypes = new ArrayList<>();
-        if (tumorDto.getPrognostic() != null && tumorDto.getPrognostic().getExcludedRelevantCancerTypes() != null) {
-            List<TumorType> excludedRCT = getTumorTypesFromDto(
-                    tumorDto.getPrognostic().getExcludedRelevantCancerTypes());
-            relevantCancerTypes = getRelevantCancerTypes(tumorTypes, excludedCancerTypes, level, excludedRCT);
-        }
-        return relevantCancerTypes;
-    }
-
-    private void parseCancerFromDto(Gene gene, Set<Alteration> alterations, GeneImportDto.TumorDto tumorDto,
+    private void convertCancerToDomainObjects(Gene gene, Set<Alteration> alterations, GeneImportDto.TumorDto tumorDto,
             List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, List<TumorType> relevantCancerTypes,
-            Integer nestLevel) throws Exception {
+            GeneImportResult result, Integer nestLevel) throws Exception {
         if (tumorTypes.isEmpty()) {
             return;
         }
@@ -565,65 +529,54 @@ public class DriveAnnotationParser {
         System.out.println(spaceStrByNestLevel(nestLevel) + "Tumor types: "
                 + tumorTypes.stream().map(TumorTypeUtils::getTumorTypeName).collect(Collectors.joining(", ")));
 
-        // cancer type summary
-        saveTumorLevelSummariesFromDto(tumorDto, "summary", gene, alterations, tumorTypes, excludedCancerTypes,
-                relevantCancerTypes, EvidenceType.TUMOR_TYPE_SUMMARY, nestLevel);
+        // Convert cancer type summary
+        convertTumorLevelSummariesToDomainObjects(tumorDto, "summary", gene, alterations, tumorTypes,
+                excludedCancerTypes, relevantCancerTypes, EvidenceType.TUMOR_TYPE_SUMMARY, result, nestLevel);
 
-        // Prognostic implications
-        Evidence prognosticEvidence = parseImplicationFromDto(gene, alterations, tumorTypes, excludedCancerTypes,
-                relevantCancerTypes,
-                tumorDto.getPrognostic(), tumorDto.getPrognostic() != null ? tumorDto.getPrognostic().getUuid() : null,
-                EvidenceType.PROGNOSTIC_IMPLICATION, nestLevel + 1);
+        // Convert prognostic implications
+        Evidence prognosticEvidence = convertImplicationToDomainObjects(gene, alterations, tumorTypes,
+                excludedCancerTypes, relevantCancerTypes, tumorDto.getPrognostic(),
+                tumorDto.getPrognostic() != null ? tumorDto.getPrognostic().getUuid() : null,
+                EvidenceType.PROGNOSTIC_IMPLICATION, result, nestLevel + 1);
 
-        // Diagnostic implications
-        Evidence diagnosticEvidence = parseImplicationFromDto(gene, alterations, tumorTypes, excludedCancerTypes,
-                relevantCancerTypes,
-                tumorDto.getDiagnostic(), tumorDto.getDiagnostic() != null ? tumorDto.getDiagnostic().getUuid() : null,
-                EvidenceType.DIAGNOSTIC_IMPLICATION, nestLevel + 1);
+        // Convert diagnostic implications
+        Evidence diagnosticEvidence = convertImplicationToDomainObjects(gene, alterations, tumorTypes,
+                excludedCancerTypes, relevantCancerTypes, tumorDto.getDiagnostic(),
+                tumorDto.getDiagnostic() != null ? tumorDto.getDiagnostic().getUuid() : null,
+                EvidenceType.DIAGNOSTIC_IMPLICATION, result, nestLevel + 1);
 
-        // diagnostic summary
+        // Convert diagnostic summary
         List<TumorType> diagnosticRCT = getRelevantCancerTypesIfExistsFromDto(tumorDto, tumorTypes, excludedCancerTypes,
                 diagnosticEvidence == null ? null : diagnosticEvidence.getLevelOfEvidence());
-        saveDxPxSummariesFromDto(
-                tumorDto,
-                "diagnosticSummary",
-                gene,
-                alterations,
-                tumorTypes,
-                excludedCancerTypes,
-                tumorDto.getDiagnostic() != null ? diagnosticRCT : relevantCancerTypes,
-                EvidenceType.DIAGNOSTIC_SUMMARY,
-                nestLevel,
+        convertDxPxSummariesToDomainObjects(tumorDto, "diagnosticSummary", gene, alterations, tumorTypes,
+                excludedCancerTypes, tumorDto.getDiagnostic() != null ? diagnosticRCT : relevantCancerTypes,
+                EvidenceType.DIAGNOSTIC_SUMMARY, result, nestLevel,
                 diagnosticEvidence == null ? null : diagnosticEvidence.getLevelOfEvidence());
 
-        // prognostic summary
+        // Convert prognostic summary
         List<TumorType> prognosticRCT = getRelevantCancerTypesIfExistsFromDto(tumorDto, tumorTypes, excludedCancerTypes,
                 prognosticEvidence == null ? null : prognosticEvidence.getLevelOfEvidence());
-        saveDxPxSummariesFromDto(tumorDto,
-                "prognosticSummary",
-                gene,
-                alterations,
-                tumorTypes,
-                excludedCancerTypes,
-                tumorDto.getPrognostic() != null ? prognosticRCT : relevantCancerTypes,
-                EvidenceType.PROGNOSTIC_SUMMARY,
-                nestLevel,
+        convertDxPxSummariesToDomainObjects(tumorDto, "prognosticSummary", gene, alterations, tumorTypes,
+                excludedCancerTypes, tumorDto.getPrognostic() != null ? prognosticRCT : relevantCancerTypes,
+                EvidenceType.PROGNOSTIC_SUMMARY, result, nestLevel,
                 prognosticEvidence == null ? null : prognosticEvidence.getLevelOfEvidence());
 
+        // Convert therapeutic implications
         if (tumorDto.getTherapeuticImplications() != null) {
             for (GeneImportDto.TherapeuticImplicationDto implicationDto : tumorDto.getTherapeuticImplications()) {
                 if ((implicationDto.getDescription() != null && !implicationDto.getDescription().trim().isEmpty()) ||
                         (implicationDto.getTreatments() != null && !implicationDto.getTreatments().isEmpty())) {
-                    parseTherapeuticImplicationsFromDto(gene, alterations, tumorTypes, excludedCancerTypes,
-                            relevantCancerTypes, implicationDto, nestLevel + 1);
+                    convertTherapeuticImplicationsToDomainObjects(gene, alterations, tumorTypes, excludedCancerTypes,
+                            relevantCancerTypes, implicationDto, result, nestLevel + 1);
                 }
             }
         }
     }
 
-    private void saveTumorLevelSummariesFromDto(GeneImportDto.TumorDto tumorDto, String summaryKey, Gene gene,
-            Set<Alteration> alterations, List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes,
-            List<TumorType> relevantCancerTypes, EvidenceType evidenceType, Integer nestLevel) {
+    private void convertTumorLevelSummariesToDomainObjects(GeneImportDto.TumorDto tumorDto, String summaryKey,
+            Gene gene, Set<Alteration> alterations, List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes,
+            List<TumorType> relevantCancerTypes, EvidenceType evidenceType, GeneImportResult result,
+            Integer nestLevel) {
         String summary = null;
         String uuid = null;
         Date lastEdit = null;
@@ -635,7 +588,6 @@ public class DriveAnnotationParser {
         }
 
         if (summary != null && !summary.isEmpty()) {
-            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
             System.out.println(spaceStrByNestLevel(nestLevel + 1) + " " + summaryKey);
             Evidence evidence = new Evidence();
             evidence.setEvidenceType(evidenceType);
@@ -657,35 +609,28 @@ public class DriveAnnotationParser {
             if (!tumorTypes.isEmpty()) {
                 evidence.setCancerTypes(new HashSet<>(tumorTypes));
             }
-            setDocuments(summary, evidence);
-            System.out.println(spaceStrByNestLevel(nestLevel + 2) +
-                    "Has description.");
-            evidenceBo.save(evidence);
+            convertDocumentsToDomainObjects(summary, evidence, result);
+            System.out.println(spaceStrByNestLevel(nestLevel + 2) + "Has description.");
+            result.getEvidencesToSave().add(evidence);
         }
     }
 
-    private void saveDxPxSummariesFromDto(GeneImportDto.TumorDto tumorDto, String summaryKey, Gene gene,
-            Set<Alteration> alterations, List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes,
-            List<TumorType> relevantCancerTypes, EvidenceType evidenceType, Integer nestLevel, LevelOfEvidence level) {
+    private void convertDxPxSummariesToDomainObjects(GeneImportDto.TumorDto tumorDto, String summaryKey,
+            Gene gene, Set<Alteration> alterations, List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes,
+            List<TumorType> relevantCancerTypes, EvidenceType evidenceType, GeneImportResult result,
+            Integer nestLevel, LevelOfEvidence level) {
         List<TumorType> rcts = new ArrayList<>(relevantCancerTypes);
         if ((rcts == null || rcts.size() == 0) && LevelOfEvidence.LEVEL_Dx1.equals(level)) {
             rcts.addAll(TumorTypeUtils.getDxOneRelevantCancerTypes(new HashSet<>(tumorTypes)));
         }
-        saveTumorLevelSummariesFromDto(
-                tumorDto,
-                summaryKey,
-                gene,
-                alterations,
-                tumorTypes,
-                excludedCancerTypes,
-                rcts,
-                evidenceType,
-                nestLevel);
+        convertTumorLevelSummariesToDomainObjects(tumorDto, summaryKey, gene, alterations, tumorTypes,
+                excludedCancerTypes, rcts, evidenceType, result, nestLevel);
     }
 
-    private Evidence parseImplicationFromDto(Gene gene, Set<Alteration> alterations, List<TumorType> tumorTypes,
+    private Evidence convertImplicationToDomainObjects(Gene gene, Set<Alteration> alterations,
+            List<TumorType> tumorTypes,
             List<TumorType> excludedCancerTypes, List<TumorType> relevantCancerTypes, Object implicationDto,
-            String uuid, EvidenceType evidenceType, Integer nestLevel) throws Exception {
+            String uuid, EvidenceType evidenceType, GeneImportResult result, Integer nestLevel) throws Exception {
         if (evidenceType != null && implicationDto != null) {
             String description = null;
             String level = null;
@@ -709,7 +654,6 @@ public class DriveAnnotationParser {
             if ((description != null && !description.trim().isEmpty()) || (level != null && !level.trim().isEmpty())) {
                 System.out.println(spaceStrByNestLevel(nestLevel) + evidenceType.name() + ":");
                 Set<Date> lastEditDates = new HashSet<>();
-                EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
                 Evidence evidence = new Evidence();
 
                 evidence.setEvidenceType(evidenceType);
@@ -745,7 +689,7 @@ public class DriveAnnotationParser {
                     System.out.println(spaceStrByNestLevel(nestLevel + 1) + "Has description.");
                     evidence.setDescription(description);
                     addDateToSet(lastEditDates, descriptionLastEdit);
-                    setDocuments(description, evidence);
+                    convertDocumentsToDomainObjects(description, evidence, result);
                 }
 
                 Date lastEdit = getMostRecentDate(lastEditDates);
@@ -754,24 +698,23 @@ public class DriveAnnotationParser {
                     System.out.println(spaceStrByNestLevel(nestLevel + 1) +
                             "Last update on: " + MainUtils.getTimeByDate(lastEdit));
                 }
-                evidenceBo.save(evidence);
+                result.getEvidencesToSave().add(evidence);
                 return evidence;
             }
         }
         return null;
     }
 
-    private void parseTherapeuticImplicationsFromDto(Gene gene, Set<Alteration> alterations, List<TumorType> tumorTypes,
-            List<TumorType> excludedCancerTypes, List<TumorType> relevantCancerTypes,
-            GeneImportDto.TherapeuticImplicationDto implicationDto, Integer nestLevel) throws Exception {
-        EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
-
-        // specific evidence
+    private void convertTherapeuticImplicationsToDomainObjects(Gene gene, Set<Alteration> alterations,
+            List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, List<TumorType> relevantCancerTypes,
+            GeneImportDto.TherapeuticImplicationDto implicationDto, GeneImportResult result, Integer nestLevel)
+            throws Exception {
         DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
         List<GeneImportDto.TreatmentDto> treatmentsList = implicationDto.getTreatments() != null
                 ? implicationDto.getTreatments()
                 : new ArrayList<>();
         int priorityCount = 1;
+
         for (GeneImportDto.TreatmentDto treatmentDto : treatmentsList) {
             if (treatmentDto.getName() == null || treatmentDto.getName().isEmpty()) {
                 System.out.println(spaceStrByNestLevel(nestLevel + 1) + "Drug does not have name, skip...");
@@ -803,7 +746,7 @@ public class DriveAnnotationParser {
             evidence.setKnownEffect(knownEffect);
             evidence.setUuid(treatmentDto.getUuid());
 
-            // approved indications
+            // Convert approved indications
             Set<String> approvedIndications = new HashSet<>();
             if (treatmentDto.getIndication() != null && !treatmentDto.getIndication().trim().isEmpty()) {
                 approvedIndications = new HashSet<>(Arrays.asList(treatmentDto.getIndication().split(";")));
@@ -856,7 +799,7 @@ public class DriveAnnotationParser {
                         if (drugUuid != null) {
                             drug.setUuid(drugUuid);
                         }
-                        drugBo.save(drug);
+                        result.getDrugsToSave().add(drug);
                     }
                     drugs.add(drug);
                 }
@@ -872,7 +815,7 @@ public class DriveAnnotationParser {
             }
             evidence.setTreatments(treatments);
 
-            // highest level of evidence
+            // Convert level of evidence
             if (treatmentDto.getLevel() == null || treatmentDto.getLevel().trim().isEmpty()) {
                 System.err.println(spaceStrByNestLevel(nestLevel + 2) + "Error: no level of evidence");
                 continue;
@@ -913,7 +856,6 @@ public class DriveAnnotationParser {
                     String definedPropagation = treatmentDto.getSolidPropagation();
                     LevelOfEvidence definedLevel = LevelOfEvidence.getByLevel(definedPropagation.toUpperCase());
 
-                    // Validate level
                     if (definedLevel != null && LevelUtils.getAllowedPropagationLevels().contains(definedLevel)) {
                         evidence.setSolidPropagationLevel(definedLevel);
                     }
@@ -930,7 +872,6 @@ public class DriveAnnotationParser {
                     String definedPropagation = treatmentDto.getLiquidPropagation();
                     LevelOfEvidence definedLevel = LevelOfEvidence.getByLevel(definedPropagation.toUpperCase());
 
-                    // Validate level
                     if (definedLevel != null && LevelUtils.getAllowedPropagationLevels().contains(definedLevel)) {
                         evidence.setLiquidPropagationLevel(definedLevel);
                     }
@@ -944,14 +885,13 @@ public class DriveAnnotationParser {
                 }
             }
 
-            // description
+            // Convert description
             if (treatmentDto.getDescription() != null && !treatmentDto.getDescription().trim().isEmpty()) {
                 String desc = treatmentDto.getDescription().trim();
                 addDateToSet(lastEditDates, treatmentDto.getDescriptionLastEdit());
                 evidence.setDescription(desc);
-                System.out.println(spaceStrByNestLevel(nestLevel + 2) +
-                        "Has description.");
-                setDocuments(desc, evidence);
+                System.out.println(spaceStrByNestLevel(nestLevel + 2) + "Has description.");
+                convertDocumentsToDomainObjects(desc, evidence, result);
             }
 
             Date lastEdit = getMostRecentDate(lastEditDates);
@@ -973,54 +913,11 @@ public class DriveAnnotationParser {
                 evidence.setRelevantCancerTypes(new HashSet<>(relevantCancerTypes));
             }
 
-            evidenceBo.save(evidence);
+            result.getEvidencesToSave().add(evidence);
         }
     }
 
-    private ImmutablePair<EvidenceType, String> getEvidenceTypeAndKnownEffectFromTreatmentDto(
-            GeneImportDto.TreatmentDto treatmentDto) {
-        ImmutablePair<EvidenceType, String> emptyPair = new ImmutablePair<EvidenceType, String>(null, null);
-        if (treatmentDto.getLevel() == null || treatmentDto.getLevel().trim().isEmpty()) {
-            return emptyPair;
-        }
-        String level = treatmentDto.getLevel().trim();
-        LevelOfEvidence levelOfEvidence = LevelOfEvidence.getByLevel(level.toUpperCase());
-
-        EvidenceType evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_SENSITIVITY;
-        String type = "";
-        if (LevelOfEvidence.LEVEL_1.equals(levelOfEvidence) || LevelOfEvidence.LEVEL_2.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_SENSITIVITY;
-            type = "Sensitive";
-        } else if (LevelOfEvidence.LEVEL_R1.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_RESISTANCE;
-            type = "Resistant";
-        } else if (LevelOfEvidence.LEVEL_3A.equals(levelOfEvidence)
-                || LevelOfEvidence.LEVEL_4.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.INVESTIGATIONAL_THERAPEUTIC_IMPLICATIONS_DRUG_SENSITIVITY;
-            type = "Sensitive";
-        } else if (LevelOfEvidence.LEVEL_R2.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.INVESTIGATIONAL_THERAPEUTIC_IMPLICATIONS_DRUG_RESISTANCE;
-            type = "Resistant";
-        } else {
-            return emptyPair;
-        }
-
-        return new ImmutablePair<EvidenceType, String>(evidenceType, type);
-    }
-
-    private void addDateToSet(Set<Date> set, Date date) {
-        if (date != null) {
-            set.add(date);
-        }
-    }
-
-    private String spaceStrByNestLevel(Integer nestLevel) {
-        if (nestLevel == null || nestLevel < 1)
-            nestLevel = 1;
-        return StringUtils.repeat("    ", nestLevel - 1);
-    }
-
-    private void setDocuments(String str, Evidence evidence) {
+    private void convertDocumentsToDomainObjects(String str, Evidence evidence, GeneImportResult result) {
         if (str == null)
             return;
         Set<Article> docs = new HashSet<>();
@@ -1038,7 +935,7 @@ public class DriveAnnotationParser {
 
         if (!pmidToSearch.isEmpty()) {
             for (Article article : NcbiEUtils.readPubmedArticles(pmidToSearch)) {
-                articleBo.save(article);
+                result.getArticlesToSave().add(article);
                 docs.add(article);
             }
         }
@@ -1046,7 +943,7 @@ public class DriveAnnotationParser {
         getAbstractFromText(evidence.getDescription()).stream().forEach(article -> {
             Article dbArticle = articleBo.findArticleByAbstract(article.getAbstractContent());
             if (dbArticle == null) {
-                articleBo.save(article);
+                result.getArticlesToSave().add(article);
                 docs.add(article);
             } else {
                 docs.add(dbArticle);
@@ -1056,57 +953,147 @@ public class DriveAnnotationParser {
         evidence.addArticles(docs);
     }
 
-    private Date getLastEdit(JSONObject object, String key) {
-        return object.has(key + LAST_EDIT_EXTENSION) ? getUpdateTime(object.get(key + LAST_EDIT_EXTENSION)) : null;
+    /**
+     * Container class to hold all domain objects that need to be saved
+     */
+    private static class GeneImportResult {
+        private Gene gene;
+        private GeneImportDto geneImportDto;
+        private List<GeneImportDto.VusDto> vusList;
+        private List<Alteration> alterationsToSave = new ArrayList<>();
+        private List<Evidence> evidencesToSave = new ArrayList<>();
+        private List<Drug> drugsToSave = new ArrayList<>();
+        private List<Article> articlesToSave = new ArrayList<>();
+
+        public Gene getGene() {
+            return gene;
+        }
+
+        public void setGene(Gene gene) {
+            this.gene = gene;
+        }
+
+        public GeneImportDto getGeneImportDto() {
+            return geneImportDto;
+        }
+
+        public void setGeneImportDto(GeneImportDto geneImportDto) {
+            this.geneImportDto = geneImportDto;
+        }
+
+        public List<GeneImportDto.VusDto> getVusList() {
+            return vusList;
+        }
+
+        public void setVusList(List<GeneImportDto.VusDto> vusList) {
+            this.vusList = vusList;
+        }
+
+        public List<Alteration> getAlterationsToSave() {
+            return alterationsToSave;
+        }
+
+        public List<Evidence> getEvidencesToSave() {
+            return evidencesToSave;
+        }
+
+        public List<Drug> getDrugsToSave() {
+            return drugsToSave;
+        }
+
+        public List<Article> getArticlesToSave() {
+            return articlesToSave;
+        }
     }
 
-    private String getUUID(JSONObject object, String key) {
-        return object.has(key + UUID_EXTENSION) ? object.getString(key + UUID_EXTENSION) : "";
-    }
+    private void updateGeneInfoFromDto(GeneImportDto geneImportDto, Gene gene) {
+        GeneImportDto.GeneTypeDto geneType = geneImportDto.getType();
+        String oncogene = geneType != null ? geneType.getOcg() : null;
+        String tsg = geneType != null ? geneType.getTsg() : null;
 
-    private void addDateToLastEditSetFromObject(Set<Date> set, JSONObject object, String key) throws JSONException {
-        if (object.has(key + LAST_EDIT_EXTENSION)) {
-            Date tmpDate = getUpdateTime(object.get(key + LAST_EDIT_EXTENSION));
-            if (tmpDate != null) {
-                set.add(tmpDate);
+        if (oncogene != null) {
+            if (oncogene.equals("Oncogene")) {
+                gene.setOncogene(true);
+            } else {
+                gene.setOncogene(false);
             }
         }
-    }
-
-    private Date getMostRecentDate(Set<Date> dates) {
-        if (dates == null || dates.size() == 0)
-            return null;
-        return Collections.max(dates);
-    }
-
-    private ImmutablePair<EvidenceType, String> getEvidenceTypeAndKnownEffectFromDrugObj(JSONObject drugObj) {
-        ImmutablePair<EvidenceType, String> emptyPair = new ImmutablePair<EvidenceType, String>(null, null);
-        if (!drugObj.has("level") || drugObj.getString("level").trim().isEmpty()) {
-            return emptyPair;
-        }
-        String level = drugObj.getString("level").trim();
-        LevelOfEvidence levelOfEvidence = LevelOfEvidence.getByLevel(level.toUpperCase());
-
-        EvidenceType evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_SENSITIVITY;
-        String type = "";
-        if (LevelOfEvidence.LEVEL_1.equals(levelOfEvidence) || LevelOfEvidence.LEVEL_2.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_SENSITIVITY;
-            type = "Sensitive";
-        } else if (LevelOfEvidence.LEVEL_R1.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_RESISTANCE;
-            type = "Resistant";
-        } else if (LevelOfEvidence.LEVEL_3A.equals(levelOfEvidence)
-                || LevelOfEvidence.LEVEL_4.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.INVESTIGATIONAL_THERAPEUTIC_IMPLICATIONS_DRUG_SENSITIVITY;
-            type = "Sensitive";
-        } else if (LevelOfEvidence.LEVEL_R2.equals(levelOfEvidence)) {
-            evidenceType = EvidenceType.INVESTIGATIONAL_THERAPEUTIC_IMPLICATIONS_DRUG_RESISTANCE;
-            type = "Resistant";
-        } else {
-            return emptyPair;
+        if (tsg != null) {
+            if (tsg.equals("Tumor Suppressor")) {
+                gene.setTSG(true);
+            } else {
+                gene.setTSG(false);
+            }
         }
 
-        return new ImmutablePair<EvidenceType, String>(evidenceType, type);
+        String grch37Isoform = geneImportDto.getIsoformOverride();
+        String grch37RefSeq = geneImportDto.getDmpRefseqId();
+        String grch38Isoform = geneImportDto.getIsoformOverrideGrch38();
+        String grch38RefSeq = geneImportDto.getDmpRefseqIdGrch38();
+
+        if (grch37Isoform != null) {
+            gene.setGrch37Isoform(grch37Isoform);
+        }
+        if (grch37RefSeq != null) {
+            gene.setGrch37RefSeq(grch37RefSeq);
+        }
+        if (grch38Isoform != null) {
+            gene.setGrch38Isoform(grch38Isoform);
+        }
+        if (grch38RefSeq != null) {
+            gene.setGrch38RefSeq(grch38RefSeq);
+        }
+    }
+
+    private Oncogenicity getOncogenicityFromDto(GeneImportDto.MutationEffectDto mutationEffect) {
+        Oncogenicity oncogenic = null;
+        if (mutationEffect != null && mutationEffect.getOncogenic() != null
+                && !mutationEffect.getOncogenic().isEmpty()) {
+            oncogenic = getOncogenicityByString(mutationEffect.getOncogenic());
+        }
+        return oncogenic;
+    }
+
+    private List<TumorType> getTumorTypesFromDto(List<GeneImportDto.TumorTypeDto> tumorTypeDtos) throws Exception {
+        if (tumorTypeDtos == null) {
+            return new ArrayList<>();
+        }
+
+        List<TumorType> tumorTypes = new ArrayList<>();
+        for (GeneImportDto.TumorTypeDto ttDto : tumorTypeDtos) {
+            String code = ttDto.getCode();
+            String mainType = ttDto.getMainType();
+            if (code != null) {
+                TumorType matchedTumorType = ApplicationContextSingleton.getTumorTypeBo().getByCode(code);
+                if (matchedTumorType == null) {
+                    throw new Exception("The tumor type code does not exist: " + code);
+                } else {
+                    tumorTypes.add(matchedTumorType);
+                }
+            } else if (mainType != null) {
+                TumorType matchedTumorType = ApplicationContextSingleton.getTumorTypeBo().getByMainType(mainType);
+                if (matchedTumorType == null) {
+                    throw new Exception("The tumor main type does not exist: " + mainType);
+                } else {
+                    tumorTypes.add(matchedTumorType);
+                }
+            } else {
+                throw new Exception("The tumor type does not exist. Maintype: " + mainType + ". Subtype: " + code);
+            }
+        }
+        return tumorTypes;
+    }
+
+    private List<TumorType> getRelevantCancerTypesIfExistsFromDto(GeneImportDto.TumorDto tumorDto,
+            List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, LevelOfEvidence level)
+            throws JSONException, Exception {
+        List<TumorType> relevantCancerTypes = new ArrayList<>();
+        if (tumorDto.getPrognostic() != null && tumorDto.getPrognostic().getExcludedRelevantCancerTypes() != null) {
+            List<TumorType> excludedRCT = getTumorTypesFromDto(
+                    tumorDto.getPrognostic().getExcludedRelevantCancerTypes());
+            relevantCancerTypes = getRelevantCancerTypes(tumorTypes, excludedCancerTypes, level, excludedRCT);
+        }
+        return relevantCancerTypes;
     }
 
     private List<TumorType> getRelevantCancerTypes(List<TumorType> tumorTypes, List<TumorType> excludedTumorTypes,
@@ -1133,17 +1120,6 @@ public class DriveAnnotationParser {
         queriedTumorTypes.removeAll(excludedRelevantCancerTypes);
 
         return new ArrayList<>(queriedTumorTypes);
-    }
-
-    private List<TumorType> getRelevantCancerTypesIfExistsFromJsonObject(JSONObject jsonObject,
-            List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, LevelOfEvidence level)
-            throws JSONException, Exception {
-        List<TumorType> relevantCancerTypes = new ArrayList<>();
-        if (jsonObject.has(EXCLUDED_RCTS_KEY)) {
-            List<TumorType> excludedRCT = getTumorTypes(jsonObject.getJSONArray(EXCLUDED_RCTS_KEY));
-            relevantCancerTypes = getRelevantCancerTypes(tumorTypes, excludedCancerTypes, level, excludedRCT);
-        }
-        return relevantCancerTypes;
     }
 
     private Date getUpdateTime(Object obj) throws JSONException {
@@ -1183,52 +1159,52 @@ public class DriveAnnotationParser {
         return oncogenic;
     }
 
-    private void setOncogenic(Gene gene, Alteration alteration, Oncogenicity oncogenic, String uuid, Date lastEdit) {
-        if (alteration != null && gene != null && oncogenic != null) {
-            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
-            List<Evidence> evidences = evidenceBo.findEvidencesByAlteration(Collections.singleton(alteration),
-                    Collections.singleton(EvidenceType.ONCOGENIC));
-            if (evidences.isEmpty()) {
-                Evidence evidence = new Evidence();
-                evidence.setGene(gene);
-                evidence.setAlterations(Collections.singleton(alteration));
-                evidence.setEvidenceType(EvidenceType.ONCOGENIC);
-                evidence.setKnownEffect(oncogenic.getOncogenic());
-                evidence.setUuid(uuid);
-                evidence.setLastEdit(lastEdit);
-                evidenceBo.save(evidence);
-            } else if (Oncogenicity.compare(oncogenic, Oncogenicity.getByEvidence(evidences.get(0))) > 0) {
-                evidences.get(0).setKnownEffect(oncogenic.getOncogenic());
-                evidences.get(0).setLastEdit(lastEdit);
-                evidenceBo.update(evidences.get(0));
-            }
+    private String spaceStrByNestLevel(Integer nestLevel) {
+        if (nestLevel == null || nestLevel < 1)
+            nestLevel = 1;
+        return StringUtils.repeat("    ", nestLevel - 1);
+    }
+
+    private void addDateToSet(Set<Date> set, Date date) {
+        if (date != null) {
+            set.add(date);
         }
     }
 
-    private List<TumorType> getTumorTypes(JSONArray tumorTypeJson) throws Exception {
-        List<TumorType> tumorTypes = new ArrayList<>();
-        for (int j = 0; j < tumorTypeJson.length(); j++) {
-            JSONObject subTT = tumorTypeJson.getJSONObject(j);
-            String code = (subTT.has("code") && !subTT.getString("code").equals("")) ? subTT.getString("code") : null;
-            String mainType = subTT.has("mainType") ? subTT.getString("mainType") : null;
-            if (code != null) {
-                TumorType matchedTumorType = ApplicationContextSingleton.getTumorTypeBo().getByCode(code);
-                if (matchedTumorType == null) {
-                    throw new Exception("The tumor type code does not exist: " + code);
-                } else {
-                    tumorTypes.add(matchedTumorType);
-                }
-            } else if (mainType != null) {
-                TumorType matchedTumorType = ApplicationContextSingleton.getTumorTypeBo().getByMainType(mainType);
-                if (matchedTumorType == null) {
-                    throw new Exception("The tumor main type does not exist: " + mainType);
-                } else {
-                    tumorTypes.add(matchedTumorType);
-                }
-            } else {
-                throw new Exception("The tumor type does not exist. Maintype: " + mainType + ". Subtype: " + code);
-            }
+    private Date getMostRecentDate(Set<Date> dates) {
+        if (dates == null || dates.size() == 0)
+            return null;
+        return Collections.max(dates);
+    }
+
+    private ImmutablePair<EvidenceType, String> getEvidenceTypeAndKnownEffectFromTreatmentDto(
+            GeneImportDto.TreatmentDto treatmentDto) {
+        ImmutablePair<EvidenceType, String> emptyPair = new ImmutablePair<EvidenceType, String>(null, null);
+        if (treatmentDto.getLevel() == null || treatmentDto.getLevel().trim().isEmpty()) {
+            return emptyPair;
         }
-        return tumorTypes;
+        String level = treatmentDto.getLevel().trim();
+        LevelOfEvidence levelOfEvidence = LevelOfEvidence.getByLevel(level.toUpperCase());
+
+        EvidenceType evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_SENSITIVITY;
+        String type = "";
+        if (LevelOfEvidence.LEVEL_1.equals(levelOfEvidence) || LevelOfEvidence.LEVEL_2.equals(levelOfEvidence)) {
+            evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_SENSITIVITY;
+            type = "Sensitive";
+        } else if (LevelOfEvidence.LEVEL_R1.equals(levelOfEvidence)) {
+            evidenceType = EvidenceType.STANDARD_THERAPEUTIC_IMPLICATIONS_FOR_DRUG_RESISTANCE;
+            type = "Resistant";
+        } else if (LevelOfEvidence.LEVEL_3A.equals(levelOfEvidence)
+                || LevelOfEvidence.LEVEL_4.equals(levelOfEvidence)) {
+            evidenceType = EvidenceType.INVESTIGATIONAL_THERAPEUTIC_IMPLICATIONS_DRUG_SENSITIVITY;
+            type = "Sensitive";
+        } else if (LevelOfEvidence.LEVEL_R2.equals(levelOfEvidence)) {
+            evidenceType = EvidenceType.INVESTIGATIONAL_THERAPEUTIC_IMPLICATIONS_DRUG_RESISTANCE;
+            type = "Resistant";
+        } else {
+            return emptyPair;
+        }
+
+        return new ImmutablePair<EvidenceType, String>(evidenceType, type);
     }
 }

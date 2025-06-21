@@ -26,4 +26,11 @@ public interface GenericBo<T> {
     List<T> findAll();
 
     Integer countAll();
+
+    /**
+     * Save all entities in a batch operation
+     * 
+     * @param entities list of entities to save
+     */
+    void saveAll(List<T> entities);
 }
