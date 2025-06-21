@@ -309,6 +309,82 @@ private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) 
 7. **Transaction Management**: Add explicit transaction boundaries for better control
 8. **Caching**: Implement application-level caching for frequently accessed data
 9. **Async Processing**: Consider async processing for very large datasets
+10. **Structured Logging**: Replace System.out/err with proper logging framework (SLF4J/Logback)
+11. **Metrics Collection**: Add performance metrics and monitoring
+12. **Error Recovery**: Implement retry mechanisms for transient failures
+
+## Exception Handling and Logging
+
+The refactored code includes comprehensive exception handling and logging throughout all four phases:
+
+### **Phase 1: JSON to DTO**
+
+-   Logs the start and completion of JSON parsing
+-   Captures and logs any JSON parsing errors with context
+-   Provides detailed error information including input data
+
+### **Phase 2: Batch Fetch Existing Records**
+
+-   Logs each step of the batch fetching process
+-   Reports counts of found entities (evidences, alterations, drugs, articles)
+-   Captures and logs database access errors with context
+-   Provides detailed error information for gene lookup failures
+
+### **Phase 3: DTO to Domain Objects**
+
+-   Logs the conversion of each major component (summary, background, mutations, VUS)
+-   Reports object counts being created for saving
+-   Captures and logs conversion errors with detailed context
+-   Provides error information for missing or invalid data
+
+### **Phase 4: Save All Changes**
+
+-   Logs each step of the save operation (deletion, saving, cache updates)
+-   Reports counts of objects being saved for each entity type
+-   Captures and logs individual save failures with entity IDs
+-   Provides detailed error information for transaction failures
+
+### **Helper Methods**
+
+-   **Drug Reference Collection**: Logs errors in collecting drug names and NCIT codes
+-   **PMID Reference Collection**: Logs errors in extracting PMIDs from text
+-   **Document Conversion**: Logs errors in fetching articles from PubMed
+
+### **Error Context Information**
+
+Each error log includes:
+
+-   **Error message**: Clear description of what went wrong
+-   **Gene information**: Gene name, ID, and status
+-   **Data counts**: Number of objects being processed
+-   **Input validation**: Status of input data
+-   **Stack traces**: Full exception stack traces for debugging
+
+### **Logging Levels**
+
+-   **INFO**: Progress information and successful operations
+-   **WARNING**: Non-critical issues that don't stop processing
+-   **ERROR**: Critical failures that prevent successful completion
+
+### **Example Error Logs**
+
+```
+ERROR: Failed to parse gene data: Invalid JSON format
+Gene info: {"name": "BRCA1", "summary": "..."}
+Release gene: true
+VUS count: 5
+
+ERROR: Failed to batch fetch existing records: Database connection timeout
+Gene name: BRCA1
+Release gene: true
+VUS count: 5
+
+ERROR: Failed to save alterations: Constraint violation
+Gene: BRCA1
+Objects to save: 15 evidences, 8 alterations, 3 drugs, 12 articles
+```
+
+This comprehensive logging ensures that any issues during the import process are properly captured and can be easily diagnosed and resolved.
 
 ## Conclusion
 

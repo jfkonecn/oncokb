@@ -167,22 +167,41 @@ public class DriveAnnotationParser {
     }
 
     private Gene parseGene(JSONObject geneInfo, Boolean releaseGene, JSONArray vus) throws Exception {
-        // Phase 1: Parse JSON and convert to DTO
-        GeneImportDto geneImportDto = GeneImportMapper.mapFromJson(geneInfo);
-        List<GeneImportDto.VusDto> vusList = GeneImportMapper.mapVusFromJson(vus);
+        try {
+            // Phase 1: Parse JSON and convert to DTO
+            System.out.println("Phase 1: Parsing JSON and converting to DTO...");
+            GeneImportDto geneImportDto = GeneImportMapper.mapFromJson(geneInfo);
+            List<GeneImportDto.VusDto> vusList = GeneImportMapper.mapVusFromJson(vus);
+            System.out.println("Phase 1 completed successfully");
 
-        // Phase 2: Batch fetch existing records
-        GeneImportContext context = batchFetchExistingRecords(geneImportDto, releaseGene, vusList);
+            // Phase 2: Batch fetch existing records
+            System.out.println("Phase 2: Batch fetching existing records...");
+            GeneImportContext context = batchFetchExistingRecords(geneImportDto, releaseGene, vusList);
+            System.out.println("Phase 2 completed successfully");
 
-        // Phase 3: Convert DTO to domain objects
-        GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList, context);
+            // Phase 3: Convert DTO to domain objects
+            System.out.println("Phase 3: Converting DTO to domain objects...");
+            GeneImportResult importResult = convertDtoToDomainObjects(geneImportDto, releaseGene, vusList, context);
+            System.out.println("Phase 3 completed successfully");
 
-        // Phase 4: Save all changes in a single transaction
-        if (importResult != null) {
-            saveAllChanges(importResult);
+            // Phase 4: Save all changes in a single transaction
+            System.out.println("Phase 4: Saving all changes in a single transaction...");
+            if (importResult != null) {
+                saveAllChanges(importResult);
+                System.out.println("Phase 4 completed successfully");
+            } else {
+                System.out.println("Phase 4 skipped - no import result to save");
+            }
+
+            return importResult != null ? importResult.getGene() : null;
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to parse gene data: " + e.getMessage());
+            System.err.println("Gene info: " + (geneInfo != null ? geneInfo.toString() : "null"));
+            System.err.println("Release gene: " + releaseGene);
+            System.err.println("VUS count: " + (vus != null ? vus.length() : 0));
+            e.printStackTrace();
+            throw e;
         }
-
-        return importResult != null ? importResult.getGene() : null;
     }
 
     /**
@@ -190,54 +209,91 @@ public class DriveAnnotationParser {
      */
     private GeneImportContext batchFetchExistingRecords(GeneImportDto geneImportDto, Boolean releaseGene,
             List<GeneImportDto.VusDto> vusList) throws Exception {
-        GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
-        EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
-        AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
-        DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
-        ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
+        try {
+            GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
+            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
+            AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
+            DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
+            ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
 
-        GeneImportContext context = new GeneImportContext();
+            GeneImportContext context = new GeneImportContext();
 
-        // Fetch gene
-        if (geneImportDto.getName() != null && !geneImportDto.getName().trim().isEmpty()) {
-            String hugo = geneImportDto.getName().trim();
-            Gene gene = geneBo.findGeneByHugoSymbol(hugo);
+            // Fetch gene
+            if (geneImportDto.getName() != null && !geneImportDto.getName().trim().isEmpty()) {
+                String hugo = geneImportDto.getName().trim();
+                System.out.println("Fetching gene: " + hugo);
 
-            if (gene == null && releaseGene) {
-                OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
-                gene = oncokbTranscriptService.findGeneBySymbol(hugo);
+                Gene gene = geneBo.findGeneByHugoSymbol(hugo);
+
+                if (gene == null && releaseGene) {
+                    System.out.println("Gene not found in released list, attempting to find via transcript service...");
+                    OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
+                    gene = oncokbTranscriptService.findGeneBySymbol(hugo);
+                }
+
+                context.setGene(gene);
+
+                if (gene != null) {
+                    System.out.println("Gene found: " + gene.getHugoSymbol() + " (ID: " + gene.getEntrezGeneId() + ")");
+
+                    // Batch fetch all existing data for this gene
+                    System.out.println("Fetching existing evidences...");
+                    context.setExistingEvidences(evidenceBo.findEvidencesByGene(Collections.singleton(gene)));
+                    System.out.println("Found " + context.getExistingEvidences().size() + " existing evidences");
+
+                    System.out.println("Fetching existing alterations...");
+                    context.setExistingAlterations(alterationBo.findAlterationsByGene(Collections.singleton(gene)));
+                    System.out.println("Found " + context.getExistingAlterations().size() + " existing alterations");
+
+                    // Pre-fetch all drugs that might be referenced
+                    System.out.println("Collecting drug references...");
+                    Set<String> drugNames = new HashSet<>();
+                    Set<String> ncitCodes = new HashSet<>();
+                    collectDrugReferences(geneImportDto, vusList, drugNames, ncitCodes);
+                    System.out.println(
+                            "Found " + drugNames.size() + " drug names and " + ncitCodes.size() + " NCIT codes");
+
+                    if (!drugNames.isEmpty()) {
+                        System.out.println("Batch fetching drugs by names...");
+                        context.setExistingDrugsByName(drugBo.findDrugsByNames(drugNames));
+                        System.out.println(
+                                "Found " + context.getExistingDrugsByName().size() + " existing drugs by name");
+                    }
+                    if (!ncitCodes.isEmpty()) {
+                        System.out.println("Batch fetching drugs by NCIT codes...");
+                        context.setExistingDrugsByNcit(drugBo.findDrugsByNcitCodes(ncitCodes));
+                        System.out.println(
+                                "Found " + context.getExistingDrugsByNcit().size() + " existing drugs by NCIT code");
+                    }
+
+                    // Pre-fetch articles that might be referenced
+                    System.out.println("Collecting PMID references...");
+                    Set<String> pmids = new HashSet<>();
+                    collectPmidReferences(geneImportDto, vusList, pmids);
+                    System.out.println("Found " + pmids.size() + " PMID references");
+
+                    if (!pmids.isEmpty()) {
+                        System.out.println("Batch fetching articles by PMIDs...");
+                        context.setExistingArticlesByPmid(articleBo.findArticlesByPmids(pmids));
+                        System.out.println(
+                                "Found " + context.getExistingArticlesByPmid().size() + " existing articles by PMID");
+                    }
+                } else {
+                    System.out.println("WARNING: Gene not found: " + hugo);
+                }
+            } else {
+                System.out.println("WARNING: No gene name provided in import data");
             }
 
-            context.setGene(gene);
-
-            if (gene != null) {
-                // Batch fetch all existing data for this gene
-                context.setExistingEvidences(evidenceBo.findEvidencesByGene(Collections.singleton(gene)));
-                context.setExistingAlterations(alterationBo.findAlterationsByGene(Collections.singleton(gene)));
-
-                // Pre-fetch all drugs that might be referenced
-                Set<String> drugNames = new HashSet<>();
-                Set<String> ncitCodes = new HashSet<>();
-                collectDrugReferences(geneImportDto, vusList, drugNames, ncitCodes);
-
-                if (!drugNames.isEmpty()) {
-                    context.setExistingDrugsByName(drugBo.findDrugsByNames(drugNames));
-                }
-                if (!ncitCodes.isEmpty()) {
-                    context.setExistingDrugsByNcit(drugBo.findDrugsByNcitCodes(ncitCodes));
-                }
-
-                // Pre-fetch articles that might be referenced
-                Set<String> pmids = new HashSet<>();
-                collectPmidReferences(geneImportDto, vusList, pmids);
-
-                if (!pmids.isEmpty()) {
-                    context.setExistingArticlesByPmid(articleBo.findArticlesByPmids(pmids));
-                }
-            }
+            return context;
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to batch fetch existing records: " + e.getMessage());
+            System.err.println("Gene name: " + (geneImportDto != null ? geneImportDto.getName() : "null"));
+            System.err.println("Release gene: " + releaseGene);
+            System.err.println("VUS count: " + (vusList != null ? vusList.size() : 0));
+            e.printStackTrace();
+            throw e;
         }
-
-        return context;
     }
 
     /**
@@ -245,25 +301,27 @@ public class DriveAnnotationParser {
      */
     private void collectDrugReferences(GeneImportDto geneImportDto, List<GeneImportDto.VusDto> vusList,
             Set<String> drugNames, Set<String> ncitCodes) {
-        if (geneImportDto.getMutations() != null) {
-            for (GeneImportDto.MutationDto mutationDto : geneImportDto.getMutations()) {
-                if (mutationDto.getTumors() != null) {
-                    for (GeneImportDto.TumorDto tumorDto : mutationDto.getTumors()) {
-                        if (tumorDto.getTherapeuticImplications() != null) {
-                            for (GeneImportDto.TherapeuticImplicationDto implicationDto : tumorDto
-                                    .getTherapeuticImplications()) {
-                                if (implicationDto.getTreatments() != null) {
-                                    for (GeneImportDto.TreatmentDto treatmentDto : implicationDto.getTreatments()) {
-                                        if (treatmentDto.getName() != null) {
-                                            for (List<GeneImportDto.DrugDto> drugsList : treatmentDto.getName()) {
-                                                for (GeneImportDto.DrugDto drugDto : drugsList) {
-                                                    if (drugDto.getDrugName() != null
-                                                            && !drugDto.getDrugName().trim().isEmpty()) {
-                                                        drugNames.add(drugDto.getDrugName().trim());
-                                                    }
-                                                    if (drugDto.getNcitCode() != null
-                                                            && !drugDto.getNcitCode().trim().isEmpty()) {
-                                                        ncitCodes.add(drugDto.getNcitCode().trim());
+        try {
+            if (geneImportDto.getMutations() != null) {
+                for (GeneImportDto.MutationDto mutationDto : geneImportDto.getMutations()) {
+                    if (mutationDto.getTumors() != null) {
+                        for (GeneImportDto.TumorDto tumorDto : mutationDto.getTumors()) {
+                            if (tumorDto.getTherapeuticImplications() != null) {
+                                for (GeneImportDto.TherapeuticImplicationDto implicationDto : tumorDto
+                                        .getTherapeuticImplications()) {
+                                    if (implicationDto.getTreatments() != null) {
+                                        for (GeneImportDto.TreatmentDto treatmentDto : implicationDto.getTreatments()) {
+                                            if (treatmentDto.getName() != null) {
+                                                for (List<GeneImportDto.DrugDto> drugsList : treatmentDto.getName()) {
+                                                    for (GeneImportDto.DrugDto drugDto : drugsList) {
+                                                        if (drugDto.getDrugName() != null
+                                                                && !drugDto.getDrugName().trim().isEmpty()) {
+                                                            drugNames.add(drugDto.getDrugName().trim());
+                                                        }
+                                                        if (drugDto.getNcitCode() != null
+                                                                && !drugDto.getNcitCode().trim().isEmpty()) {
+                                                            ncitCodes.add(drugDto.getNcitCode().trim());
+                                                        }
                                                     }
                                                 }
                                             }
@@ -275,6 +333,9 @@ public class DriveAnnotationParser {
                     }
                 }
             }
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to collect drug references: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -283,49 +344,51 @@ public class DriveAnnotationParser {
      */
     private void collectPmidReferences(GeneImportDto geneImportDto, List<GeneImportDto.VusDto> vusList,
             Set<String> pmids) {
-        // Extract PMIDs from gene summary
-        if (geneImportDto.getSummary() != null) {
-            pmids.addAll(getPmidsFromText(geneImportDto.getSummary()));
-        }
+        try {
+            // Extract PMIDs from gene summary
+            if (geneImportDto.getSummary() != null) {
+                pmids.addAll(getPmidsFromText(geneImportDto.getSummary()));
+            }
 
-        // Extract PMIDs from gene background
-        if (geneImportDto.getBackground() != null) {
-            pmids.addAll(getPmidsFromText(geneImportDto.getBackground()));
-        }
+            // Extract PMIDs from gene background
+            if (geneImportDto.getBackground() != null) {
+                pmids.addAll(getPmidsFromText(geneImportDto.getBackground()));
+            }
 
-        // Extract PMIDs from mutations
-        if (geneImportDto.getMutations() != null) {
-            for (GeneImportDto.MutationDto mutationDto : geneImportDto.getMutations()) {
-                if (mutationDto.getSummary() != null) {
-                    pmids.addAll(getPmidsFromText(mutationDto.getSummary()));
-                }
-                if (mutationDto.getMutationEffect() != null
-                        && mutationDto.getMutationEffect().getDescription() != null) {
-                    pmids.addAll(getPmidsFromText(mutationDto.getMutationEffect().getDescription()));
-                }
+            // Extract PMIDs from mutations
+            if (geneImportDto.getMutations() != null) {
+                for (GeneImportDto.MutationDto mutationDto : geneImportDto.getMutations()) {
+                    if (mutationDto.getSummary() != null) {
+                        pmids.addAll(getPmidsFromText(mutationDto.getSummary()));
+                    }
+                    if (mutationDto.getMutationEffect() != null
+                            && mutationDto.getMutationEffect().getDescription() != null) {
+                        pmids.addAll(getPmidsFromText(mutationDto.getMutationEffect().getDescription()));
+                    }
 
-                if (mutationDto.getTumors() != null) {
-                    for (GeneImportDto.TumorDto tumorDto : mutationDto.getTumors()) {
-                        if (tumorDto.getSummary() != null) {
-                            pmids.addAll(getPmidsFromText(tumorDto.getSummary()));
-                        }
-                        if (tumorDto.getPrognostic() != null && tumorDto.getPrognostic().getDescription() != null) {
-                            pmids.addAll(getPmidsFromText(tumorDto.getPrognostic().getDescription()));
-                        }
-                        if (tumorDto.getDiagnostic() != null && tumorDto.getDiagnostic().getDescription() != null) {
-                            pmids.addAll(getPmidsFromText(tumorDto.getDiagnostic().getDescription()));
-                        }
+                    if (mutationDto.getTumors() != null) {
+                        for (GeneImportDto.TumorDto tumorDto : mutationDto.getTumors()) {
+                            if (tumorDto.getSummary() != null) {
+                                pmids.addAll(getPmidsFromText(tumorDto.getSummary()));
+                            }
+                            if (tumorDto.getPrognostic() != null && tumorDto.getPrognostic().getDescription() != null) {
+                                pmids.addAll(getPmidsFromText(tumorDto.getPrognostic().getDescription()));
+                            }
+                            if (tumorDto.getDiagnostic() != null && tumorDto.getDiagnostic().getDescription() != null) {
+                                pmids.addAll(getPmidsFromText(tumorDto.getDiagnostic().getDescription()));
+                            }
 
-                        if (tumorDto.getTherapeuticImplications() != null) {
-                            for (GeneImportDto.TherapeuticImplicationDto implicationDto : tumorDto
-                                    .getTherapeuticImplications()) {
-                                if (implicationDto.getDescription() != null) {
-                                    pmids.addAll(getPmidsFromText(implicationDto.getDescription()));
-                                }
-                                if (implicationDto.getTreatments() != null) {
-                                    for (GeneImportDto.TreatmentDto treatmentDto : implicationDto.getTreatments()) {
-                                        if (treatmentDto.getDescription() != null) {
-                                            pmids.addAll(getPmidsFromText(treatmentDto.getDescription()));
+                            if (tumorDto.getTherapeuticImplications() != null) {
+                                for (GeneImportDto.TherapeuticImplicationDto implicationDto : tumorDto
+                                        .getTherapeuticImplications()) {
+                                    if (implicationDto.getDescription() != null) {
+                                        pmids.addAll(getPmidsFromText(implicationDto.getDescription()));
+                                    }
+                                    if (implicationDto.getTreatments() != null) {
+                                        for (GeneImportDto.TreatmentDto treatmentDto : implicationDto.getTreatments()) {
+                                            if (treatmentDto.getDescription() != null) {
+                                                pmids.addAll(getPmidsFromText(treatmentDto.getDescription()));
+                                            }
                                         }
                                     }
                                 }
@@ -334,6 +397,9 @@ public class DriveAnnotationParser {
                     }
                 }
             }
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to collect PMID references: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -342,106 +408,205 @@ public class DriveAnnotationParser {
      */
     private GeneImportResult convertDtoToDomainObjects(GeneImportDto geneImportDto, Boolean releaseGene,
             List<GeneImportDto.VusDto> vusList, GeneImportContext context) throws Exception {
-        GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
-        Integer nestLevel = 1;
+        try {
+            GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
+            Integer nestLevel = 1;
 
-        if (geneImportDto.getName() == null || geneImportDto.getName().trim().isEmpty()) {
-            return null;
-        }
-
-        String hugo = geneImportDto.getName().trim();
-        Gene gene = context.getGene();
-
-        if (gene == null) {
-            System.out.println(spaceStrByNestLevel(nestLevel) + "Gene " + hugo + " is not in the released list.");
-            if (releaseGene) {
-                OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
-                gene = oncokbTranscriptService.findGeneBySymbol(hugo);
-                if (gene == null) {
-                    System.out.println("!!!!!!!!!Could not find gene " + hugo + " either.");
-                    throw new IOException("!!!!!!!!!Could not find gene " + hugo + ".");
-                }
-            } else {
+            if (geneImportDto.getName() == null || geneImportDto.getName().trim().isEmpty()) {
+                System.out.println("WARNING: No gene name provided, skipping conversion");
                 return null;
             }
+
+            String hugo = geneImportDto.getName().trim();
+            Gene gene = context.getGene();
+
+            if (gene == null) {
+                System.out.println(spaceStrByNestLevel(nestLevel) + "Gene " + hugo + " is not in the released list.");
+                if (releaseGene) {
+                    System.out.println("Attempting to find gene via transcript service...");
+                    OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
+                    gene = oncokbTranscriptService.findGeneBySymbol(hugo);
+                    if (gene == null) {
+                        System.err.println("ERROR: Could not find gene " + hugo + " either.");
+                        throw new IOException("Could not find gene " + hugo + ".");
+                    }
+                } else {
+                    System.out.println("Gene not found and releaseGene is false, skipping conversion");
+                    return null;
+                }
+            }
+
+            if (gene == null) {
+                System.out.print(spaceStrByNestLevel(nestLevel) + "No info about " + hugo);
+                return null;
+            }
+
+            System.out.println(spaceStrByNestLevel(nestLevel) + "Gene: " + gene.getHugoSymbol());
+
+            // Create result container
+            GeneImportResult result = new GeneImportResult();
+            result.setGene(gene);
+            result.setGeneImportDto(geneImportDto);
+            result.setVusList(vusList);
+
+            // Update gene info
+            System.out.println("Updating gene info...");
+            updateGeneInfoFromDto(geneImportDto, gene);
+
+            // Phase 3: Convert all DTOs to domain objects using context
+            System.out.println("Converting summary...");
+            convertSummaryToDomainObjects(gene, geneImportDto, result, context, nestLevel + 1);
+
+            System.out.println("Converting background...");
+            convertBackgroundToDomainObjects(gene, geneImportDto, result, context, nestLevel + 1);
+
+            System.out.println("Converting mutations...");
+            convertMutationsToDomainObjects(gene, geneImportDto.getMutations(), result, context, nestLevel + 1);
+
+            System.out.println("Converting VUS...");
+            convertVusToDomainObjects(gene, vusList, result, context, nestLevel + 1);
+
+            System.out.println("Conversion completed successfully");
+            System.out.println("Objects to save: " + result.getEvidencesToSave().size() + " evidences, " +
+                    result.getAlterationsToSave().size() + " alterations, " +
+                    result.getDrugsToSave().size() + " drugs, " +
+                    result.getArticlesToSave().size() + " articles");
+
+            return result;
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to convert DTO to domain objects: " + e.getMessage());
+            System.err.println("Gene name: " + (geneImportDto != null ? geneImportDto.getName() : "null"));
+            System.err.println("Release gene: " + releaseGene);
+            System.err.println("VUS count: " + (vusList != null ? vusList.size() : 0));
+            System.err.println("Context gene: "
+                    + (context != null && context.getGene() != null ? context.getGene().getHugoSymbol() : "null"));
+            e.printStackTrace();
+            throw e;
         }
-
-        if (gene == null) {
-            System.out.print(spaceStrByNestLevel(nestLevel) + "No info about " + hugo);
-            return null;
-        }
-
-        System.out.println(spaceStrByNestLevel(nestLevel) + "Gene: " + gene.getHugoSymbol());
-
-        // Create result container
-        GeneImportResult result = new GeneImportResult();
-        result.setGene(gene);
-        result.setGeneImportDto(geneImportDto);
-        result.setVusList(vusList);
-
-        // Update gene info
-        updateGeneInfoFromDto(geneImportDto, gene);
-
-        // Phase 3: Convert all DTOs to domain objects using context
-        convertSummaryToDomainObjects(gene, geneImportDto, result, context, nestLevel + 1);
-        convertBackgroundToDomainObjects(gene, geneImportDto, result, context, nestLevel + 1);
-        convertMutationsToDomainObjects(gene, geneImportDto.getMutations(), result, context, nestLevel + 1);
-        convertVusToDomainObjects(gene, vusList, result, context, nestLevel + 1);
-
-        return result;
     }
 
     /**
      * Phase 4: Save all changes in a single transaction
      */
     private void saveAllChanges(GeneImportResult result) throws Exception {
-        GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
-        EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
-        AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
-        DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
-        ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
+        try {
+            GeneBo geneBo = ApplicationContextSingleton.getGeneBo();
+            EvidenceBo evidenceBo = ApplicationContextSingleton.getEvidenceBo();
+            AlterationBo alterationBo = ApplicationContextSingleton.getAlterationBo();
+            DrugBo drugBo = ApplicationContextSingleton.getDrugBo();
+            ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
 
-        // Delete existing data first (using pre-fetched data from context)
-        Gene gene = result.getGene();
+            // Delete existing data first (using pre-fetched data from context)
+            Gene gene = result.getGene();
+            System.out.println("Starting save operation for gene: " + gene.getHugoSymbol());
 
-        // Note: We would need to pass the context to this method to use pre-fetched
-        // data
-        // For now, we'll fetch the data again for deletion
-        List<Evidence> existingEvidences = evidenceBo.findEvidencesByGene(Collections.singleton(gene));
-        List<Alteration> existingAlterations = alterationBo.findAlterationsByGene(Collections.singleton(gene));
+            // Note: We would need to pass the context to this method to use pre-fetched
+            // data
+            // For now, we'll fetch the data again for deletion
+            System.out.println("Fetching existing data for deletion...");
+            List<Evidence> existingEvidences = evidenceBo.findEvidencesByGene(Collections.singleton(gene));
+            List<Alteration> existingAlterations = alterationBo.findAlterationsByGene(Collections.singleton(gene));
+            System.out.println("Found " + existingEvidences.size() + " existing evidences and "
+                    + existingAlterations.size() + " existing alterations to delete");
 
-        for (Evidence evidence : existingEvidences) {
-            evidenceBo.delete(evidence);
+            System.out.println("Deleting existing evidences...");
+            for (Evidence evidence : existingEvidences) {
+                try {
+                    evidenceBo.delete(evidence);
+                } catch (Exception e) {
+                    System.err
+                            .println("ERROR: Failed to delete evidence ID " + evidence.getId() + ": " + e.getMessage());
+                    throw e;
+                }
+            }
+
+            System.out.println("Deleting existing alterations...");
+            for (Alteration alteration : existingAlterations) {
+                try {
+                    alterationBo.delete(alteration);
+                } catch (Exception e) {
+                    System.err.println(
+                            "ERROR: Failed to delete alteration ID " + alteration.getId() + ": " + e.getMessage());
+                    throw e;
+                }
+            }
+
+            // Update cache before saving new data
+            System.out.println("Updating cache before saving...");
+            CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), false);
+
+            // Save all new data in batches
+            if (!result.getAlterationsToSave().isEmpty()) {
+                System.out.println("Saving " + result.getAlterationsToSave().size() + " alterations...");
+                try {
+                    alterationBo.saveAll(result.getAlterationsToSave());
+                    System.out.println("Successfully saved " + result.getAlterationsToSave().size() + " alterations");
+                } catch (Exception e) {
+                    System.err.println("ERROR: Failed to save alterations: " + e.getMessage());
+                    throw e;
+                }
+            }
+
+            if (!result.getDrugsToSave().isEmpty()) {
+                System.out.println("Saving " + result.getDrugsToSave().size() + " drugs...");
+                try {
+                    drugBo.saveAll(result.getDrugsToSave());
+                    System.out.println("Successfully saved " + result.getDrugsToSave().size() + " drugs");
+                } catch (Exception e) {
+                    System.err.println("ERROR: Failed to save drugs: " + e.getMessage());
+                    throw e;
+                }
+            }
+
+            if (!result.getArticlesToSave().isEmpty()) {
+                System.out.println("Saving " + result.getArticlesToSave().size() + " articles...");
+                try {
+                    articleBo.saveAll(result.getArticlesToSave());
+                    System.out.println("Successfully saved " + result.getArticlesToSave().size() + " articles");
+                } catch (Exception e) {
+                    System.err.println("ERROR: Failed to save articles: " + e.getMessage());
+                    throw e;
+                }
+            }
+
+            if (!result.getEvidencesToSave().isEmpty()) {
+                System.out.println("Saving " + result.getEvidencesToSave().size() + " evidences...");
+                try {
+                    evidenceBo.saveAll(result.getEvidencesToSave());
+                    System.out.println("Successfully saved " + result.getEvidencesToSave().size() + " evidences");
+                } catch (Exception e) {
+                    System.err.println("ERROR: Failed to save evidences: " + e.getMessage());
+                    throw e;
+                }
+            }
+
+            // Update gene
+            System.out.println("Updating gene...");
+            try {
+                geneBo.update(gene);
+                System.out.println("Successfully updated gene");
+            } catch (Exception e) {
+                System.err.println("ERROR: Failed to update gene: " + e.getMessage());
+                throw e;
+            }
+
+            // Update cache after saving
+            System.out.println("Updating cache after saving...");
+            CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), true);
+
+            System.out.println("All save operations completed successfully for gene: " + gene.getHugoSymbol());
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to save all changes: " + e.getMessage());
+            System.err.println("Gene: "
+                    + (result != null && result.getGene() != null ? result.getGene().getHugoSymbol() : "null"));
+            System.err.println(
+                    "Objects to save: " + (result != null ? result.getEvidencesToSave().size() + " evidences, " +
+                            result.getAlterationsToSave().size() + " alterations, " +
+                            result.getDrugsToSave().size() + " drugs, " +
+                            result.getArticlesToSave().size() + " articles" : "null"));
+            e.printStackTrace();
+            throw e;
         }
-        for (Alteration alteration : existingAlterations) {
-            alterationBo.delete(alteration);
-        }
-
-        // Update cache before saving new data
-        CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), false);
-
-        // Save all new data in batches
-        if (!result.getAlterationsToSave().isEmpty()) {
-            alterationBo.saveAll(result.getAlterationsToSave());
-        }
-
-        if (!result.getDrugsToSave().isEmpty()) {
-            drugBo.saveAll(result.getDrugsToSave());
-        }
-
-        if (!result.getArticlesToSave().isEmpty()) {
-            articleBo.saveAll(result.getArticlesToSave());
-        }
-
-        if (!result.getEvidencesToSave().isEmpty()) {
-            evidenceBo.saveAll(result.getEvidencesToSave());
-        }
-
-        // Update gene
-        geneBo.update(gene);
-
-        // Update cache after saving
-        CacheUtils.updateGene(Collections.singleton(gene.getEntrezGeneId()), true);
     }
 
     private void convertSummaryToDomainObjects(Gene gene, GeneImportDto geneImportDto,
@@ -1093,46 +1258,57 @@ public class DriveAnnotationParser {
 
     private void convertDocumentsToDomainObjects(String str, Evidence evidence, GeneImportResult result,
             GeneImportContext context) {
-        if (str == null)
-            return;
-        Set<Article> docs = new HashSet<>();
-        ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
+        try {
+            if (str == null)
+                return;
+            Set<Article> docs = new HashSet<>();
+            ArticleBo articleBo = ApplicationContextSingleton.getArticleBo();
 
-        Set<String> pmidToSearch = new HashSet<>();
-        getPmidsFromText(evidence.getDescription()).forEach(pmid -> {
-            // First check pre-fetched articles
-            Article doc = context.getExistingArticlesByPmid().get(pmid);
-            if (doc != null) {
-                docs.add(doc);
-            } else {
-                // Fall back to database lookup
-                doc = articleBo.findArticleByPmid(pmid);
+            Set<String> pmidToSearch = new HashSet<>();
+            getPmidsFromText(evidence.getDescription()).forEach(pmid -> {
+                // First check pre-fetched articles
+                Article doc = context.getExistingArticlesByPmid().get(pmid);
                 if (doc != null) {
                     docs.add(doc);
                 } else {
-                    pmidToSearch.add(pmid);
+                    // Fall back to database lookup
+                    doc = articleBo.findArticleByPmid(pmid);
+                    if (doc != null) {
+                        docs.add(doc);
+                    } else {
+                        pmidToSearch.add(pmid);
+                    }
                 }
-            }
-        });
+            });
 
-        if (!pmidToSearch.isEmpty()) {
-            for (Article article : NcbiEUtils.readPubmedArticles(pmidToSearch)) {
-                result.getArticlesToSave().add(article);
-                docs.add(article);
+            if (!pmidToSearch.isEmpty()) {
+                System.out.println("Fetching " + pmidToSearch.size() + " new articles from PubMed...");
+                for (Article article : NcbiEUtils.readPubmedArticles(pmidToSearch)) {
+                    result.getArticlesToSave().add(article);
+                    docs.add(article);
+                }
+                System.out.println("Successfully fetched " + pmidToSearch.size() + " new articles");
             }
+
+            getAbstractFromText(evidence.getDescription()).stream().forEach(article -> {
+                Article dbArticle = articleBo.findArticleByAbstract(article.getAbstractContent());
+                if (dbArticle == null) {
+                    result.getArticlesToSave().add(article);
+                    docs.add(article);
+                } else {
+                    docs.add(dbArticle);
+                }
+            });
+
+            evidence.addArticles(docs);
+        } catch (Exception e) {
+            System.err.println("ERROR: Failed to convert documents to domain objects: " + e.getMessage());
+            System.err.println("Evidence description length: "
+                    + (evidence.getDescription() != null ? evidence.getDescription().length() : 0));
+            System.err.println(
+                    "Context articles count: " + (context != null ? context.getExistingArticlesByPmid().size() : 0));
+            e.printStackTrace();
         }
-
-        getAbstractFromText(evidence.getDescription()).stream().forEach(article -> {
-            Article dbArticle = articleBo.findArticleByAbstract(article.getAbstractContent());
-            if (dbArticle == null) {
-                result.getArticlesToSave().add(article);
-                docs.add(article);
-            } else {
-                docs.add(dbArticle);
-            }
-        });
-
-        evidence.addArticles(docs);
     }
 
     /**
@@ -1351,7 +1527,7 @@ public class DriveAnnotationParser {
             List<TumorType> tumorTypes, List<TumorType> excludedCancerTypes, LevelOfEvidence level)
             throws JSONException, Exception {
         List<TumorType> relevantCancerTypes = new ArrayList<>();
-        if (tumorDto.getPrognostic() != null && tumorDto.getPrognostic().getExcludedRelevantCancerTypes() != null) {
+        if (tumorDto != null && tumorDto.getPrognostic() != null && tumorDto.getPrognostic().getExcludedRelevantCancerTypes() != null) {
             List<TumorType> excludedRCT = getTumorTypesFromDto(
                     tumorDto.getPrognostic().getExcludedRelevantCancerTypes());
             relevantCancerTypes = getRelevantCancerTypes(tumorTypes, excludedCancerTypes, level, excludedRCT);
