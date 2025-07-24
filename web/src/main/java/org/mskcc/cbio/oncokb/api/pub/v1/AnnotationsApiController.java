@@ -70,7 +70,7 @@ public class AnnotationsApiController {
         } else {
             ReferenceGenome matchedRG = resolveMatchedRG(referenceGenome);
             Query query = new Query(null, matchedRG, entrezGeneId, hugoSymbol, proteinChange, null, null, tumorType, consequence, proteinStart, proteinEnd, null);
-            
+
             indicatorQueryResp = this.cacheFetcher.processQuery(
                 query.getReferenceGenome(),
                 query.getEntrezGeneId(),
@@ -108,7 +108,7 @@ public class AnnotationsApiController {
     ) throws ApiHttpErrorException {
         if (body == null) {
             throw new ApiHttpErrorException("The request body is missing.", HttpStatus.BAD_REQUEST);
-        } 
+        }
         return new ResponseEntity<>(annotateMutationsByProteinChange(body), HttpStatus.OK);
     }
 
@@ -621,8 +621,8 @@ public class AnnotationsApiController {
                 query.getStructuralVariantType(),
                 null,
                 null,
-                false, 
-                query.getEvidenceTypes(), 
+                false,
+                query.getEvidenceTypes(),
                 false
             );
             resp.getQuery().setId(query.getId());
@@ -657,13 +657,13 @@ public class AnnotationsApiController {
                 StringUtils.capitalize(query.getCopyNameAlterationType().name().toLowerCase()),
                 null,
                 query.getTumorType(),
-                null, 
-                null, 
-                null, 
                 null,
-                null, 
-                null, 
-                false, 
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
                 query.getEvidenceTypes(),
                 false
             );
