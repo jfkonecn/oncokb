@@ -16,6 +16,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -30,6 +31,7 @@ import org.mskcc.cbio.oncokb.apiModels.CancerTypeMatch;
 import org.mskcc.cbio.oncokb.apiModels.DrugMatch;
 import org.mskcc.cbio.oncokb.apiModels.GeneticType;
 import org.mskcc.cbio.oncokb.apiModels.LevelsOfEvidenceMatch;
+import org.mskcc.cbio.oncokb.bo.OncokbTranscriptService;
 import org.mskcc.cbio.oncokb.genomenexus.GNVariantAnnotationType;
 import org.mskcc.cbio.oncokb.model.Alteration;
 import org.mskcc.cbio.oncokb.model.AnnotationSearchQueryType;
@@ -48,8 +50,9 @@ import org.mskcc.cbio.oncokb.model.TypeaheadQueryType;
 import org.mskcc.cbio.oncokb.model.TypeaheadSearchResp;
 
 public class AnnotationSearchUtils {
+    private static final OncokbTranscriptService oncokbTranscriptService = new OncokbTranscriptService();
 
-    public static Set<TypeaheadSearchResp> searchCuratedAnnotation(String query) {
+    public static Set<TypeaheadSearchResp> searchCuratedAnnotation(String query) throws org.oncokb.oncokb_transcript.ApiException {
         LinkedHashSet<TypeaheadSearchResp> result = new LinkedHashSet<>();
         // genomic queries will not have space in the query
         String trimmedQuery = query.trim().replaceAll(" ", "");
@@ -78,8 +81,8 @@ public class AnnotationSearchUtils {
         } else if (keywords.size() == 2 && keywords.get(1).startsWith("(")) { // could be CDKN2A (p14)
             String keyword = String.join(" ", keywords);
             result.addAll(convertGene(GeneUtils.searchGene(keyword, false), keyword));
-        } 
-        
+        }
+
         if (result.size() == 0) {
             // Assume one of the keyword is gene
             Map<String, Set<Gene>> map = new HashedMap();
@@ -121,25 +124,27 @@ public class AnnotationSearchUtils {
 
                             if (foundAlteration != null) {
                                 String oncokbVariant = foundAlteration.getAlteration();
-                                String oncokbTranscript  = genomeNexusAnnotation.getAnnotationSummary().getTranscriptConsequenceSummary().getTranscriptId();   
+                                String oncokbTranscript  = genomeNexusAnnotation.getAnnotationSummary().getTranscriptConsequenceSummary().getTranscriptId();
                                 String inputVariant = keywords.get(1).toUpperCase();
                                 String gene = foundAlteration.getGene().getHugoSymbol();
 
-                                TypeaheadSearchResp response = newTypeaheadVariant(foundAlteration);
-                                response.setAnnotation(gene 
-                                    + " " 
-                                    + inputVariant  
-                                    + " is based on a transcript not used by OncoKB. The equivalent mutation " 
-                                    + gene
-                                    + " "
-                                    + oncokbVariant
-                                    + " is annotated on OncoKB transcript "
-                                    + oncokbTranscript
-                                    + "."
-                                );
-                                result.add(response);
+                                Optional<TypeaheadSearchResp> response = newTypeaheadVariant(foundAlteration);
+                                if (response.isPresent()) {
+                                    response.get().setAnnotation(gene
+                                        + " "
+                                        + inputVariant
+                                        + " is based on a transcript not used by OncoKB. The equivalent mutation "
+                                        + gene
+                                        + " "
+                                        + oncokbVariant
+                                        + " is annotated on OncoKB transcript "
+                                        + oncokbTranscript
+                                        + "."
+                                    );
+                                    result.add(response.get());
+                                }
                             }
-                        }                        
+                        }
                     }
                 } catch (ApiException e) {}
             }
@@ -156,16 +161,19 @@ public class AnnotationSearchUtils {
                                     // The search bar is able to show results for variants that do not exist in database based on rules, which germline does not support right now.
                                     Alteration alteration =
                                             AlterationUtils.getAlteration(gene.getHugoSymbol(), keyword, null, null, null, null, null, false);
-                                    TypeaheadSearchResp typeaheadSearchResp = newTypeaheadVariant(alteration);
-                                    typeaheadSearchResp.setVariantExist(false);
-                                    result.add(typeaheadSearchResp);
-                                    if (typeaheadSearchResp.getOncogenicity() == null
-                                            || typeaheadSearchResp.getOncogenicity().isEmpty()) {
-                                        String annotation = "Please make sure your query is valid.";
-                                        if (typeaheadSearchResp.getAnnotation() != null) {
-                                            annotation = typeaheadSearchResp.getAnnotation() + " " + annotation;
+                                    Optional<TypeaheadSearchResp> typeaheadSearchRespOptional = newTypeaheadVariant(alteration);
+                                    if (typeaheadSearchRespOptional.isPresent()) {
+                                        TypeaheadSearchResp typeaheadSearchResp = typeaheadSearchRespOptional.get();
+                                        typeaheadSearchResp.setVariantExist(false);
+                                        result.add(typeaheadSearchResp);
+                                        if (typeaheadSearchResp.getOncogenicity() == null
+                                                || typeaheadSearchResp.getOncogenicity().isEmpty()) {
+                                            String annotation = "Please make sure your query is valid.";
+                                            if (typeaheadSearchResp.getAnnotation() != null) {
+                                                annotation = typeaheadSearchResp.getAnnotation() + " " + annotation;
+                                            }
+                                            typeaheadSearchResp.setAnnotation(annotation);
                                         }
-                                        typeaheadSearchResp.setAnnotation(annotation);
                                     }
                                 }
                             }
@@ -526,7 +534,7 @@ public class AnnotationSearchUtils {
         }
     }
 
-    private static LinkedHashSet<TypeaheadSearchResp> getMatch(Map<String, Set<Gene>> map, List<String> keywords, Boolean exactMatch) {
+    private static LinkedHashSet<TypeaheadSearchResp> getMatch(Map<String, Set<Gene>> map, List<String> keywords, Boolean exactMatch) throws org.oncokb.oncokb_transcript.ApiException {
         LinkedHashSet<TypeaheadSearchResp> result = new LinkedHashSet<>();
         if (map == null || keywords == null) {
             return result;
@@ -604,11 +612,14 @@ public class AnnotationSearchUtils {
         return result;
     }
 
-    private static TreeSet<TypeaheadSearchResp> convertVariant(List<Alteration> alterations, String keyword) {
+    private static TreeSet<TypeaheadSearchResp> convertVariant(List<Alteration> alterations, String keyword) throws org.oncokb.oncokb_transcript.ApiException {
         TreeSet<TypeaheadSearchResp> result = new TreeSet<>(new VariantComp(keyword));
         if (alterations != null) {
             for (Alteration alteration : alterations) {
-                result.add(newTypeaheadVariant(alteration));
+                Optional<TypeaheadSearchResp> optional = newTypeaheadVariant(alteration);
+                if (optional.isPresent()) {
+                    result.add(optional.get());
+                }
             }
         }
         return result;
@@ -631,16 +642,16 @@ public class AnnotationSearchUtils {
 
 
         if (drugMatch.getAlterations().size() > 1 || drugMatch.getAlterations().size() == 0) {
-            typeaheadSearchResp.setLink("/gene/" 
+            typeaheadSearchResp.setLink("/gene/"
                 + drugMatch.getGene().getHugoSymbol()
                 + "/"
                 + geneticType.toLowerCase()
             );
         } else {
-            typeaheadSearchResp.setLink("/gene/" 
-                + drugMatch.getGene().getHugoSymbol() 
+            typeaheadSearchResp.setLink("/gene/"
+                + drugMatch.getGene().getHugoSymbol()
                 + "/"
-                + geneticType.toLowerCase() 
+                + geneticType.toLowerCase()
                 + "/"
                 + drugMatch.getAlterations().iterator().next().getAlteration()
             );
@@ -676,7 +687,7 @@ public class AnnotationSearchUtils {
                 somaticEvidences.add(evidence);
             }
         }
-        
+
         List<TypeaheadSearchResp> result = findEvidencesWithDrugAssociatedByGeneticType(query, exactMatch, somaticEvidences, GeneticType.SOMATIC);
         result.addAll(findEvidencesWithDrugAssociatedByGeneticType(query, exactMatch, germlineEvidences, GeneticType.GERMLINE));
         return result;
@@ -753,7 +764,7 @@ public class AnnotationSearchUtils {
         return drugMatches.stream().map(drugMatch -> newTypeaheadDrug(drugMatch, geneticType)).collect(Collectors.toList());
     }
 
-    private static TypeaheadSearchResp newTypeaheadVariant(Alteration alteration) {
+    private static Optional<TypeaheadSearchResp> newTypeaheadVariant(Alteration alteration) throws org.oncokb.oncokb_transcript.ApiException {
         TypeaheadSearchResp typeaheadSearchResp = new TypeaheadSearchResp();
         typeaheadSearchResp.setGene(alteration.getGene());
         typeaheadSearchResp.setVariants(Collections.singleton(alteration));
@@ -774,6 +785,20 @@ public class AnnotationSearchUtils {
             query.setReferenceGenome(referenceGenome);
         }
 
+        if (alteration.getProteinStart() > 0 && alteration.getProteinEnd() > 0) {
+            String actualRef = oncokbTranscriptService.getProteinSequence(query.getReferenceGenome(), alteration.getGene());
+            if (StringUtils.isEmpty(actualRef)) {
+                return Optional.empty();
+            }
+            if (alteration.getProteinEnd() > actualRef.length()) {
+                return Optional.empty();
+            }
+            String subRef = actualRef.substring(alteration.getProteinStart() - 1, alteration.getProteinEnd());
+            if (!subRef.equalsIgnoreCase(alteration.getRefResidues())) {
+                return Optional.empty();
+            }
+        }
+
         IndicatorQueryResp resp = IndicatorUtils.processQuery(query, null, false, null, false);
         typeaheadSearchResp.setOncogenicity(resp.getOncogenic());
         typeaheadSearchResp.setVUS(resp.getVUS());
@@ -792,18 +817,18 @@ public class AnnotationSearchUtils {
 
         typeaheadSearchResp.setQueryType(TypeaheadQueryType.VARIANT);
 
-        String link = "/gene/" 
-            + alteration.getGene().getHugoSymbol() 
-            + "/" 
-            + (alteration.getForGermline() ? GeneticType.GERMLINE.toLowerCase() : GeneticType.SOMATIC.toLowerCase()) 
-            + "/" 
+        String link = "/gene/"
+            + alteration.getGene().getHugoSymbol()
+            + "/"
+            + (alteration.getForGermline() ? GeneticType.GERMLINE.toLowerCase() : GeneticType.SOMATIC.toLowerCase())
+            + "/"
             + alteration.getAlteration();
 
         if (referenceGenome != DEFAULT_REFERENCE_GENOME) {
             link += "?refGenome=" + referenceGenome;
         }
         typeaheadSearchResp.setLink(link);
-        return typeaheadSearchResp;
+        return Optional.of(typeaheadSearchResp);
     }
 
     public static TypeaheadSearchResp newTypeaheadAnnotation(String query, GNVariantAnnotationType type, ReferenceGenome referenceGenome, Alteration alteration, IndicatorQueryResp queryResp) {

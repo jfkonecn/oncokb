@@ -61,7 +61,7 @@ public interface PrivateSearchApi {
     ResponseEntity<LinkedHashSet<TypeaheadSearchResp>> searchTypeAheadGet(
         @ApiParam(value = "The search query, it could be hugoSymbol, entrezGeneId or variant. At least two characters. Maximum two keywords are supported, separated by space", required = true) @RequestParam(value = "query") String query,
         @ApiParam(value = "The limit of returned result.") @RequestParam(value = "limit", defaultValue = "5", required = false) Integer limit
-    );
+    ) throws ApiException;
 
     @ApiOperation(value = "", notes = "Find NCIT matches based on blur query. This is not for search OncoKB curated drugs. Please use drugs/lookup for that purpose.", response = Drug.class, responseContainer = "List", tags = "Drugs")
     @ApiResponses(value = {

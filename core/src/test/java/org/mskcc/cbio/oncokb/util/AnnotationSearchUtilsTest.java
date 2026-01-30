@@ -9,10 +9,11 @@ import org.mskcc.cbio.oncokb.model.AnnotationSearchQueryType;
 import org.mskcc.cbio.oncokb.model.AnnotationSearchResult;
 import org.mskcc.cbio.oncokb.model.TypeaheadQueryType;
 import org.mskcc.cbio.oncokb.model.TypeaheadSearchResp;
+import org.oncokb.oncokb_transcript.ApiException;
 
 public class AnnotationSearchUtilsTest extends TestCase {
 
-    public void testSearchNonHgvsAnnotation() {
+    public void testSearchNonHgvsAnnotation() throws ApiException {
         // test gene query
         Set<TypeaheadSearchResp> respSet = searchCuratedAnnotation("BRAF");
         // This is a gene search, there should be a gene search result

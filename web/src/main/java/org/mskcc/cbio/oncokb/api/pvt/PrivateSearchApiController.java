@@ -108,7 +108,7 @@ public class PrivateSearchApiController implements PrivateSearchApi {
     @Override
     public ResponseEntity<LinkedHashSet<TypeaheadSearchResp>> searchTypeAheadGet(
         @ApiParam(value = "The search query, it could be hugoSymbol, entrezGeneId, variant, or cancer type. At least two characters. Maximum two keywords are supported, separated by space", required = true) @RequestParam(value = "query") String query,
-        @ApiParam(value = "The limit of returned result.") @RequestParam(value = "limit", defaultValue = "5", required = false) Integer limit) {
+        @ApiParam(value = "The limit of returned result.") @RequestParam(value = "limit", defaultValue = "5", required = false) Integer limit) throws ApiException {
         final int QUERY_MIN_LENGTH = 2;
         LinkedHashSet<TypeaheadSearchResp> result = new LinkedHashSet<>();
         if (limit == null) {
