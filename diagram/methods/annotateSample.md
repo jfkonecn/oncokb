@@ -5,39 +5,39 @@ flowchart LR
   A["annotateSample(sample)"] --> B["init response + output lists"]
   B --> C["set response id and tumorType"]
 
-  C --> D{sample.structuralVariants != null?}
+  C --> D{"sample.structuralVariants != null?"}
   D -- Yes --> E["setTumorTypeForQueries(structuralVariants)"]
   E --> F["annotateStructuralVariants(structuralVariants)"]
   D -- No --> G["skip"]
 
-  F --> H{sample.copyNumberAlterations != null?}
+  F --> H{"sample.copyNumberAlterations != null?"}
   G --> H
   H -- Yes --> I["setTumorTypeForQueries(CNA)"]
   I --> J["annotateCopyNumberAlterations(CNA)"]
   H -- No --> K["skip"]
 
-  J --> L{sample.mutations != null?}
+  J --> L{"sample.mutations != null?"}
   K --> L
   L -- No --> M["skip mutation block"]
-  L -- Yes --> N{mutations.genomicChange != null?}
+  L -- Yes --> N{"mutations.genomicChange != null?"}
 
   N -- Yes --> O["setTumorTypeForQueries(genomicChange)"]
   O --> P["annotateMutationsByGenomicChange(genomicChange)"]
   N -- No --> Q["skip genomic"]
 
-  P --> R{mutations.proteinChange != null?}
+  P --> R{"mutations.proteinChange != null?"}
   Q --> R
   R -- Yes --> S["setTumorTypeForQueries(proteinChange)"]
   S --> T["annotateMutationsByProteinChange(proteinChange)"]
   R -- No --> U["skip protein"]
 
-  T --> V{mutations.hgvsg != null?}
+  T --> V{"mutations.hgvsg != null?"}
   U --> V
   V -- Yes --> W["setTumorTypeForQueries(hgvsg)"]
   W --> X["annotateMutationsByHGVSg(hgvsg)"]
   V -- No --> Y["skip hgvsg"]
 
-  X --> Z{mutations.cDnaChange != null?}
+  X --> Z{"mutations.cDnaChange != null?"}
   Y --> Z
   Z -- Yes --> A1["setTumorTypeForQueries(cDnaChange)"]
   A1 --> A2["annotateMutationsByHGVSg(cDnaChange)"]

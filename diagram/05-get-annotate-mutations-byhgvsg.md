@@ -2,15 +2,15 @@
 
 ```mermaid
 flowchart LR
-  A["HTTP GET /annotate/mutations/byHGVSg"] --> B{hgvsg empty?}
+  A["HTTP GET /annotate/mutations/byHGVSg"] --> B{"hgvsg empty?"}
   B -- Yes --> C["Throw ApiHttpErrorException BAD_REQUEST"]
   B -- No --> D["resolveMatchedRG(referenceGenome)"]
 
-  D --> E{referenceGenome empty?}
+  D --> E{"referenceGenome empty?"}
   E -- No --> F["MainUtils.searchEnum"]
-  F --> G{matchedRG null?}
+  F --> G{"matchedRG null?"}
   G -- Yes --> H["Throw ApiHttpErrorException BAD_REQUEST invalid referenceGenome"]
-  G -- No --> I{AlterationUtils.isValidHgvsg(hgvsg)?}
+  G -- No --> I{"AlterationUtils.isValidHgvsg(hgvsg)?"}
   E -- Yes --> I
   I -- No --> J["Throw ApiHttpErrorException BAD_REQUEST invalid hgvsg"]
   I -- Yes --> K["Build single AnnotateMutationByHGVSgQuery"]
@@ -26,17 +26,17 @@ flowchart LR
 
   Q --> R["Per RG helper: dedupe hgvsg requiring GN via cacheFetcher.hgvsgShouldBeAnnotated"]
   R --> S["GenomeNexusUtils.getHgvsVariantsAnnotation"]
-  S --> T{annotation count mismatch?}
+  S --> T{"annotation count mismatch?"}
   T -- Yes --> U["Throw ApiException"]
   T -- No --> V["Loop each query"]
 
-  V --> W{Query had GN annotation?}
+  V --> W{"Query had GN annotation?"}
   W -- No --> X["getIndicatorQueryFromHGVS(empty transcript)"]
   W -- Yes --> Y["AlterationUtils.getAlterationsFromGenomeNexus"]
   Y --> Z["getIndicatorQueryForCuratedHgvs"]
-  Z --> A1{Curated response found?}
+  Z --> A1{"Curated response found?"}
   A1 -- Yes --> A2["Use curated response"]
-  A1 -- No --> A3{query.germline false?}
+  A1 -- No --> A3{"query.germline false?"}
   A3 -- Yes --> A4["getIndicatorQueryFromHGVS(selected transcript)"]
   A3 -- No --> A5["indicator remains null"]
   A5 --> X
@@ -45,7 +45,7 @@ flowchart LR
   A6 --> A7["set response query id"]
   A2 --> A7
   X --> A7
-  A7 --> A8{More queries?}
+  A7 --> A8{"More queries?"}
   A8 -- Yes --> V
   A8 -- No --> A9["return list"]
 
@@ -54,12 +54,12 @@ flowchart LR
   B2 --> B3["Return ResponseEntity 200"]
 
   subgraph CURATED["getIndicatorQueryForCuratedHgvs"]
-    C1["find alteration by hgvsg"] --> C2{match + germline aligned?}
+    C1["find alteration by hgvsg"] --> C2{"match + germline aligned?"}
     C2 -- Yes --> C3["cacheFetcher.processQuery"]
     C2 -- No --> C4["read transcript hgvsc"]
-    C4 --> C5{hgvsc split has 2 parts?}
+    C4 --> C5{"hgvsc split has 2 parts?"}
     C5 -- Yes --> C6["find alteration by hgvsc part"]
-    C6 --> C7{match + germline aligned?}
+    C6 --> C7{"match + germline aligned?"}
     C7 -- Yes --> C8["cacheFetcher.processQuery"]
     C7 -- No --> C9["return null"]
     C5 -- No --> C9

@@ -3,10 +3,10 @@
 ```mermaid
 flowchart LR
   A["HTTP GET /annotation/search"] --> B["Initialize result as empty TreeSet"]
-  B --> C{limit == null?}
+  B --> C{"limit == null?"}
   C -- Yes --> D["limit = 10"]
   C -- No --> E["keep provided limit"]
-  D --> F{query != null and length >= 2?}
+  D --> F{"query != null and length >= 2?"}
   E --> F
 
   F -- Yes --> G["annotationSearch(query)"]
