@@ -13,10 +13,12 @@ flowchart LR
   G --> I{"more queries?"}
   H --> I
   I -- Yes --> C
-  I -- No --> J["call annotateMutationsByGenomicChange(GRCh37, grch37Queries)"]
-  J --> K["call annotateMutationsByGenomicChange(GRCh38, grch38Queries)"]
-  K --> L["reassemble outputs in original input order"]
-  L --> M["return result list"]
+  I -- No --> J{"partition complete?"}
+  J -- Yes --> K["call annotateMutationsByGenomicChange(GRCh37, grch37Queries)"]
+  K --> K1{"always invoke GRCh38 helper next?"}
+  K1 -- Yes --> L["call annotateMutationsByGenomicChange(GRCh38, grch38Queries)"]
+  L --> M["reassemble outputs in original input order"]
+  M --> N["return result list"]
 ```
 
 Downstream method: `diagram/methods/annotateMutationsByGenomicChange-rg-list.md`

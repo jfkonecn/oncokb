@@ -19,10 +19,11 @@ flowchart LR
   L --> M["annotateMutationsByHGVSg(singleton)"]
 
   M --> N["Partition by RG; null defaults to GRCh37"]
-  N --> O["annotateMutationsByHGVSg(GRCh37, grch37Queries)"]
-  N --> P["annotateMutationsByHGVSg(GRCh38, grch38Queries)"]
-  O --> Q["Reassemble original order"]
-  P --> Q
+  N --> N1{"Partition complete?"}
+  N1 -- Yes --> O["annotateMutationsByHGVSg(GRCh37, grch37Queries)"]
+  O --> O1{"Always invoke GRCh38 helper next?"}
+  O1 -- Yes --> P["annotateMutationsByHGVSg(GRCh38, grch38Queries)"]
+  P --> Q["Reassemble original order"]
 
   Q --> R["Per RG helper: dedupe hgvsg requiring GN via cacheFetcher.hgvsgShouldBeAnnotated"]
   R --> S["GenomeNexusUtils.getHgvsVariantsAnnotation"]

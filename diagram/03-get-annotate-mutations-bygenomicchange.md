@@ -17,10 +17,11 @@ flowchart LR
   J --> K["annotateMutationsByGenomicChange(singleton)"]
 
   K --> L["Partition queries by RG into grch37/grch38"]
-  L --> M["annotateMutationsByGenomicChange(GRCh37, grch37Queries)"]
-  L --> N["annotateMutationsByGenomicChange(GRCh38, grch38Queries)"]
-  M --> O["Reassemble original order"]
-  N --> O
+  L --> L1{"Partition complete?"}
+  L1 -- Yes --> M["annotateMutationsByGenomicChange(GRCh37, grch37Queries)"]
+  M --> M1{"Always invoke GRCh38 helper next?"}
+  M1 -- Yes --> N["annotateMutationsByGenomicChange(GRCh38, grch38Queries)"]
+  N --> O["Reassemble original order"]
 
   O --> P["Per RG helper: build queriesToGN via GenomeNexusUtils.convertGenomicLocation + cacheFetcher.genomicLocationShouldBeAnnotated"]
   P --> Q["GenomeNexusUtils.getGenomicLocationVariantsAnnotation"]

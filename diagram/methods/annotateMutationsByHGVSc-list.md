@@ -14,10 +14,12 @@ flowchart LR
   H --> J{"more queries?"}
   I --> J
   J -- Yes --> C
-  J -- No --> K["call annotateMutationsByHGVSc(GRCh37, grch37Queries)"]
-  K --> L["call annotateMutationsByHGVSc(GRCh38, grch38Queries)"]
-  L --> M["reassemble original order"]
-  M --> N["return result list"]
+  J -- No --> K{"partition complete?"}
+  K -- Yes --> L["call annotateMutationsByHGVSc(GRCh37, grch37Queries)"]
+  L --> L1{"always invoke GRCh38 helper next?"}
+  L1 -- Yes --> M["call annotateMutationsByHGVSc(GRCh38, grch38Queries)"]
+  M --> N["reassemble original order"]
+  N --> O["return result list"]
 ```
 
 Downstream method: `diagram/methods/annotateMutationsByHGVSc-rg-list.md`

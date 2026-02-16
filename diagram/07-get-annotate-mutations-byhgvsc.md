@@ -19,10 +19,11 @@ flowchart LR
   L --> M["annotateMutationsByHGVSc(singleton)"]
 
   M --> N["Partition by RG; null defaults to GRCh37"]
-  N --> O["annotateMutationsByHGVSc(GRCh37, grch37Queries)"]
-  N --> P["annotateMutationsByHGVSc(GRCh38, grch38Queries)"]
-  O --> Q["Reassemble original order"]
-  P --> Q
+  N --> N1{"Partition complete?"}
+  N1 -- Yes --> O["annotateMutationsByHGVSc(GRCh37, grch37Queries)"]
+  O --> O1{"Always invoke GRCh38 helper next?"}
+  O1 -- Yes --> P["annotateMutationsByHGVSc(GRCh38, grch38Queries)"]
+  P --> Q["Reassemble original order"]
 
   Q --> R["HGVSc helper first pass loop"]
   R --> S{"cacheFetcher.hgvscShouldBeAnnotated(hgvsc)?"}

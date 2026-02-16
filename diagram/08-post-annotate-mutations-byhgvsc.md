@@ -7,10 +7,11 @@ flowchart LR
   B -- No --> D["annotateMutationsByHGVSc(body)"]
 
   D --> E["Partition by referenceGenome; null defaults to GRCh37"]
-  E --> F["annotateMutationsByHGVSc(GRCh37, grch37Queries)"]
-  E --> G["annotateMutationsByHGVSc(GRCh38, grch38Queries)"]
-  F --> H["Reassemble original order"]
-  G --> H
+  E --> E1{"Partition complete?"}
+  E1 -- Yes --> F["annotateMutationsByHGVSc(GRCh37, grch37Queries)"]
+  F --> F1{"Always invoke GRCh38 helper next?"}
+  F1 -- Yes --> G["annotateMutationsByHGVSc(GRCh38, grch38Queries)"]
+  G --> H["Reassemble original order"]
 
   H --> I["Per RG helper first pass over queries"]
   I --> J{"hgvscShouldBeAnnotated?"}

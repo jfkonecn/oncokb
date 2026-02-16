@@ -73,7 +73,10 @@ Source: `web/src/main/java/org/mskcc/cbio/oncokb/api/pub/v1/AnnotationsApiContro
 - `annotateMutationsByGenomicChange(mutations)`
   - Partition input by reference genome into GRCh37/GRCh38 lists and index maps.
   - Defaults null reference genome to GRCh37 on query object.
-  - Call `annotateMutationsByGenomicChange(GRCh37, ...)` and `annotateMutationsByGenomicChange(GRCh38, ...)`.
+  - After partitioning is complete, always call both
+    - `annotateMutationsByGenomicChange(GRCh37, ...)`
+    - `annotateMutationsByGenomicChange(GRCh38, ...)`
+    even when one partition list is empty.
   - Reassemble results in original order.
 
 - `annotateMutationsByGenomicChange(referenceGenome, queries)`
@@ -100,7 +103,7 @@ Source: `web/src/main/java/org/mskcc/cbio/oncokb/api/pub/v1/AnnotationsApiContro
 
 - `annotateMutationsByHGVSg(mutations)`
   - Partition by reference genome with default GRCh37.
-  - Call genome-specific overload for both references.
+  - After partitioning is complete, always call genome-specific overload for both references (including empty partitions).
   - Reassemble in original order.
 
 - `annotateMutationsByHGVSg(referenceGenome, queries)`
@@ -129,7 +132,7 @@ Source: `web/src/main/java/org/mskcc/cbio/oncokb/api/pub/v1/AnnotationsApiContro
 
 - `annotateMutationsByHGVSc(mutations)`
   - Partition by reference genome with default GRCh37.
-  - Call genome-specific overload for both references.
+  - After partitioning is complete, always call genome-specific overload for both references (including empty partitions).
   - Reassemble original order.
 
 - `annotateMutationsByHGVSc(referenceGenome, queries)`
@@ -332,7 +335,12 @@ Source: `web/src/main/java/org/mskcc/cbio/oncokb/api/pub/v1/AnnotationsApiContro
 
 ## Mermaid Safety Checklist
 - Prefer quoted labels in nodes: `A["Text"]`, not `A[Text with punctuation]`.
+- Prefer quoted labels in decision nodes: `A{"Condition text"}`, not `A{Condition text}`.
 - Avoid Java-like signatures in labels (`foo(List)`, `bar(a,b)`); use plain words (`foo list`, `bar a b`).
 - End each edge statement with `;` in dense diagrams.
 - Keep one edge per line and avoid chaining multiple statements on one line.
 - If a diagram fails to render, simplify labels first (remove parentheses/commas/colons) before changing structure.
+- Pre-flight lint before handing off:
+  - No unquoted square nodes: `ID[...]` must be `ID["..."]`.
+  - No unquoted decision nodes: `ID{...}` must be `ID{"..."}`.
+  - Mermaid fences balanced (` ```mermaid ` / ` ``` `).
