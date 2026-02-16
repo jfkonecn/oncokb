@@ -63,3 +63,4 @@ flowchart LR
 - `annotateCopyNumberAlterations(List)`: `diagram/methods/annotateCopyNumberAlterations-list.md`
 - `annotateSample`: `diagram/methods/annotateSample.md`
 - `setTumorTypeForQueries`: `diagram/methods/setTumorTypeForQueries.md`
+- `processQuery (CacheFetcher + IndicatorUtils)`: `diagram/methods/processQuery.md`
