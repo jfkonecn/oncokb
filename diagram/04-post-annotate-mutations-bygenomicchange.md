@@ -2,60 +2,60 @@
 
 ```mermaid
 flowchart LR
-  A[HTTP POST /annotate/mutations/byGenomicChange] --> B{body == null?}
-  B -- Yes --> C[Throw ApiHttpErrorException BAD_REQUEST]
-  B -- No --> D[annotateMutationsByGenomicChange(body)]
+  A["HTTP POST /annotate/mutations/byGenomicChange"] --> B{body == null?}
+  B -- Yes --> C["Throw ApiHttpErrorException BAD_REQUEST"]
+  B -- No --> D["annotateMutationsByGenomicChange(body)"]
 
-  D --> E[Partition by referenceGenome; null defaults to GRCh37]
-  E --> F[annotateMutationsByGenomicChange(GRCh37, grch37Queries)]
-  E --> G[annotateMutationsByGenomicChange(GRCh38, grch38Queries)]
-  F --> H[Reassemble original order]
+  D --> E["Partition by referenceGenome; null defaults to GRCh37"]
+  E --> F["annotateMutationsByGenomicChange(GRCh37, grch37Queries)"]
+  E --> G["annotateMutationsByGenomicChange(GRCh38, grch38Queries)"]
+  F --> H["Reassemble original order"]
   G --> H
 
-  H --> I[Per RG helper: build GN query set (dedupe) from genomicLocation]
-  I --> J[GenomeNexusUtils.getGenomicLocationVariantsAnnotation]
+  H --> I["Per RG helper: build GN query set (dedupe) from genomicLocation"]
+  I --> J["GenomeNexusUtils.getGenomicLocationVariantsAnnotation"]
   J --> K{annotation count mismatch?}
-  K -- Yes --> L[Throw ApiException]
-  K -- No --> M[Loop each query]
+  K -- Yes --> L["Throw ApiException"]
+  K -- No --> M["Loop each query"]
 
   M --> N{Has GN annotation?}
-  N -- No --> O[getIndicatorQueryFromGenomicLocation(empty transcript)]
-  N -- Yes --> P[AlterationUtils.getAlterationsFromGenomeNexus]
-  P --> Q[getIndicatorQueryForCuratedHgvs]
+  N -- No --> O["getIndicatorQueryFromGenomicLocation(empty transcript)"]
+  N -- Yes --> P["AlterationUtils.getAlterationsFromGenomeNexus"]
+  P --> Q["getIndicatorQueryForCuratedHgvs"]
   Q --> R{Curated response found?}
-  R -- Yes --> S[Use curated response]
+  R -- Yes --> S["Use curated response"]
   R -- No --> T{query.germline false?}
-  T -- Yes --> U[getIndicatorQueryFromGenomicLocation(selected transcript)]
-  T -- No --> V[indicator remains null]
+  T -- Yes --> U["getIndicatorQueryFromGenomicLocation(selected transcript)"]
+  T -- No --> V["indicator remains null"]
   V --> O
 
-  U --> W[set hgvsInfo]
-  W --> X[set response query id]
+  U --> W["set hgvsInfo"]
+  W --> X["set response query id"]
   S --> X
   O --> X
   X --> Y{More queries?}
   Y -- Yes --> M
-  Y -- No --> Z[return list]
+  Y -- No --> Z["return list"]
 
-  Z --> A1[JsonResultFactory.getIndicatorQueryRespWithoutGermline]
-  A1 --> A2[Return ResponseEntity 200]
+  Z --> A1["JsonResultFactory.getIndicatorQueryRespWithoutGermline"]
+  A1 --> A2["Return ResponseEntity 200"]
 
-  subgraph CURATED[getIndicatorQueryForCuratedHgvs]
-    C1[find alteration by hgvsg] --> C2{match + germline aligned?}
-    C2 -- Yes --> C3[cacheFetcher.processQuery]
-    C2 -- No --> C4[extract hgvsc from transcript summary]
+  subgraph CURATED["getIndicatorQueryForCuratedHgvs"]
+    C1["find alteration by hgvsg"] --> C2{match + germline aligned?}
+    C2 -- Yes --> C3["cacheFetcher.processQuery"]
+    C2 -- No --> C4["extract hgvsc from transcript summary"]
     C4 --> C5{hgvsc split by ':' gives 2 parts?}
-    C5 -- Yes --> C6[find alteration by hgvsc part]
+    C5 -- Yes --> C6["find alteration by hgvsc part"]
     C6 --> C7{match + germline aligned?}
-    C7 -- Yes --> C8[cacheFetcher.processQuery]
-    C7 -- No --> C9[return null]
+    C7 -- Yes --> C8["cacheFetcher.processQuery"]
+    C7 -- No --> C9["return null"]
     C5 -- No --> C9
   end
 
-  subgraph FROM_LOC[getIndicatorQueryFromGenomicLocation]
-    G1[QueryUtils.getQueryFromAlteration] --> G2[cacheFetcher.processQuery]
-    G2 --> G3[addTranscriptAndExonToResponse]
-    G3 --> G4[set query.hgvsInfo]
+  subgraph FROM_LOC["getIndicatorQueryFromGenomicLocation"]
+    G1["QueryUtils.getQueryFromAlteration"] --> G2["cacheFetcher.processQuery"]
+    G2 --> G3["addTranscriptAndExonToResponse"]
+    G3 --> G4["set query.hgvsInfo"]
   end
 ```
 
