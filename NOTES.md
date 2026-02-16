@@ -329,3 +329,10 @@ Source: `web/src/main/java/org/mskcc/cbio/oncokb/api/pub/v1/AnnotationsApiContro
 - Mark terminal nodes where external methods are called and not expanded further.
 - Show BAD_REQUEST throws as explicit terminal nodes.
 - Show success responses as explicit terminal nodes.
+
+## Mermaid Safety Checklist
+- Prefer quoted labels in nodes: `A["Text"]`, not `A[Text with punctuation]`.
+- Avoid Java-like signatures in labels (`foo(List)`, `bar(a,b)`); use plain words (`foo list`, `bar a b`).
+- End each edge statement with `;` in dense diagrams.
+- Keep one edge per line and avoid chaining multiple statements on one line.
+- If a diagram fails to render, simplify labels first (remove parentheses/commas/colons) before changing structure.
